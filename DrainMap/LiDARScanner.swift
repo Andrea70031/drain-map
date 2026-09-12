@@ -1,7 +1,9 @@
 import ARKit
+import Combine
 import CoreVideo
 import Foundation
-import RealityKit
+import SceneKit
+import SwiftUI
 import simd
 
 final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
@@ -102,11 +104,15 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
                 candidateCount += 1
 
                 if let confidenceBase {
-                    let confidenceRow = confidenceBase.advanced(by: y * confidenceRowBytes).assumingMemoryBound(to: UInt8.self)
+                    let confidenceRow = confidenceBase
+                        .advanced(by: y * confidenceRowBytes)
+                        .assumingMemoryBound(to: UInt8.self)
                     if confidenceRow[x] < 1 { continue }
                 }
 
-                let depthRow = depthBase.advanced(by: y * depthRowBytes).assumingMemoryBound(to: Float32.self)
+                let depthRow = depthBase
+                    .advanced(by: y * depthRowBytes)
+                    .assumingMemoryBound(to: Float32.self)
                 let z = depthRow[x]
                 guard z.isFinite, z > 0.15, z < 5.0 else { continue }
 
@@ -188,11 +194,13 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
 struct ScannerCameraView: UIViewRepresentable {
     @ObservedObject var scanner: LiDARScanner
 
-    func makeUIView(context: Context) -> ARView {
-        let view = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
+    func makeUIView(context: Context) -> ARSCNView {
+        let view = ARSCNView(frame: .zero)
         view.session = scanner.session
+        view.scene = SCNScene()
+        view.backgroundColor = .black
         return view
     }
 
-    func updateUIView(_ uiView: ARView, context: Context) {}
+    func updateUIView(_ uiView: ARSCNView, context: Context) {}
 }
