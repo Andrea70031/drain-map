@@ -16,6 +16,7 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
     @Published private(set) var cameraDenied = false
 
     private var lastProcessedTimestamp: TimeInterval = 0
+    private var previousMetrics: ScanMetrics?
 
     override init() {
         super.init()
@@ -62,6 +63,7 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     private func startSession() {
+        previousMetrics = nil
         let configuration = ARWorldTrackingConfiguration()
         configuration.worldAlignment = .gravity
         configuration.planeDetection = [.horizontal]
@@ -88,7 +90,8 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         lastProcessedTimestamp = frame.timestamp
 
         guard let depthData = frame.smoothedSceneDepth ?? frame.sceneDepth else { return }
-        guard let result = analyze(depthData: depthData, frame: frame) else { return }
+        guard let rawResult = analyze(depthData: depthData, frame: frame) else { return }
+        let result = stabilize(rawResult)
 
         DispatchQueue.main.async {
             self.metrics = result
@@ -268,6 +271,55 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
             depressionMillimeters: Double(max(0, -minimumResidual) * 1000),
             flowPath: flowPath
         )
+    }
+
+    private func stabilize(_ fresh: ScanMetrics) -> ScanMetrics {
+        guard let previous = previousMetrics,
+              previous.hasMeasurement,
+              previous.gridColumns == fresh.gridColumns,
+              previous.gridRows == fresh.gridRows else {
+            previousMetrics = fresh
+            return fresh
+        }
+
+        let alpha = 0.28
+        let qualityAlpha = 0.40
+        var result = fresh
+
+        func blend(_ old: Double, _ new: Double, factor: Double = alpha) -> Double {
+            old * (1 - factor) + new * factor
+        }
+
+        result.slopePercent = blend(previous.slopePercent, fresh.slopePercent)
+        result.slopeDegrees = blend(previous.slopeDegrees, fresh.slopeDegrees)
+        result.distanceMeters = blend(previous.distanceMeters, fresh.distanceMeters)
+        result.quality = blend(previous.quality, fresh.quality, factor: qualityAlpha)
+        result.reliefMillimeters = blend(previous.reliefMillimeters, fresh.reliefMillimeters)
+        result.depressionMillimeters = blend(previous.depressionMillimeters, fresh.depressionMillimeters)
+
+        let vx = (1 - alpha) * cos(previous.downhillAngleRadians) + alpha * cos(fresh.downhillAngleRadians)
+        let vy = (1 - alpha) * sin(previous.downhillAngleRadians) + alpha * sin(fresh.downhillAngleRadians)
+        result.downhillAngleRadians = atan2(vy, vx)
+
+        if previous.surfaceGrid.count == fresh.surfaceGrid.count {
+            result.surfaceGrid = zip(previous.surfaceGrid, fresh.surfaceGrid).map { old, new in
+                if old < 0 { return new }
+                if new < 0 { return old }
+                return blend(old, new)
+            }
+
+            let validIndices = result.surfaceGrid.indices.filter { result.surfaceGrid[$0] >= 0 }
+            if let minimumIndex = validIndices.min(by: { result.surfaceGrid[$0] < result.surfaceGrid[$1] }) {
+                let column = minimumIndex % max(result.gridColumns, 1)
+                let row = minimumIndex / max(result.gridColumns, 1)
+                result.lowPointX = Double(column) / Double(max(result.gridColumns - 1, 1))
+                result.lowPointY = Double(row) / Double(max(result.gridRows - 1, 1))
+            }
+            result.flowPath = makeFlowPath(grid: result.surfaceGrid, columns: result.gridColumns, rows: result.gridRows)
+        }
+
+        previousMetrics = result
+        return result
     }
 
     private func makeFlowPath(grid: [Double], columns: Int, rows: Int) -> [SurfacePoint] {
