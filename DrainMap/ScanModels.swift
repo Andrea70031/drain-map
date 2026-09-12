@@ -1,5 +1,10 @@
 import Foundation
 
+struct SurfacePoint: Equatable {
+    let x: Double
+    let y: Double
+}
+
 struct ScanMetrics: Equatable {
     var slopePercent: Double = 0
     var slopeDegrees: Double = 0
@@ -18,6 +23,7 @@ struct ScanMetrics: Equatable {
     var lowPointY: Double = 0.5
     var reliefMillimeters: Double = 0
     var depressionMillimeters: Double = 0
+    var flowPath: [SurfacePoint] = []
 
     var qualityLabel: String {
         switch quality {

@@ -180,7 +180,7 @@ struct ScanView: View {
                     Text("MAPPA SUPERFICIE")
                         .font(.caption2.weight(.bold))
                         .tracking(1.5)
-                    Text("Basso → alto")
+                    Text("Basso → alto · linea = deflusso stimato")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -213,6 +213,35 @@ struct ScanView: View {
                             .offset(
                                 x: CGFloat(column) * (cellWidth + spacing),
                                 y: CGFloat(row) * (cellHeight + spacing)
+                            )
+                    }
+
+                    if scanner.metrics.flowPath.count > 1 {
+                        Path { path in
+                            guard let first = scanner.metrics.flowPath.first else { return }
+                            path.move(to: CGPoint(
+                                x: CGFloat(first.x) * geometry.size.width,
+                                y: CGFloat(first.y) * geometry.size.height
+                            ))
+                            for point in scanner.metrics.flowPath.dropFirst() {
+                                path.addLine(to: CGPoint(
+                                    x: CGFloat(point.x) * geometry.size.width,
+                                    y: CGFloat(point.y) * geometry.size.height
+                                ))
+                            }
+                        }
+                        .stroke(.white.opacity(0.92), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round, dash: [5, 4]))
+                        .shadow(color: .cyan.opacity(0.8), radius: 3)
+                    }
+
+                    if let endPoint = scanner.metrics.flowPath.last {
+                        Image(systemName: "drop.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .shadow(color: .cyan, radius: 5)
+                            .position(
+                                x: CGFloat(endPoint.x) * geometry.size.width,
+                                y: CGFloat(endPoint.y) * geometry.size.height
                             )
                     }
 

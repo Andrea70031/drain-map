@@ -215,6 +215,7 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         let quality = min(1, Double(samples.count) / Double(max(candidateCount, 1)))
         let lowPointX = lowestSample.map { Double($0.column) / Double(max(xValues.count - 1, 1)) } ?? 0.5
         let lowPointY = lowestSample.map { Double($0.row) / Double(max(yValues.count - 1, 1)) } ?? 0.5
+        let flowPath = makeFlowPath(grid: surfaceGrid, columns: xValues.count, rows: yValues.count)
 
         return ScanMetrics(
             slopePercent: Double(slopePercent),
@@ -230,8 +231,71 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
             lowPointX: lowPointX,
             lowPointY: lowPointY,
             reliefMillimeters: Double(verticalSpan * 1000),
-            depressionMillimeters: Double(max(0, -minimumResidual) * 1000)
+            depressionMillimeters: Double(max(0, -minimumResidual) * 1000),
+            flowPath: flowPath
         )
+    }
+
+    private func makeFlowPath(grid: [Double], columns: Int, rows: Int) -> [SurfacePoint] {
+        guard columns > 1, rows > 1, grid.count == columns * rows else { return [] }
+
+        let centerColumn = columns / 2
+        let centerRow = rows / 2
+        let validIndices = grid.indices.filter { grid[$0] >= 0 }
+        guard !validIndices.isEmpty else { return [] }
+
+        let startIndex = validIndices.min { lhs, rhs in
+            let lc = lhs % columns
+            let lr = lhs / columns
+            let rc = rhs % columns
+            let rr = rhs / columns
+            let ld = (lc - centerColumn) * (lc - centerColumn) + (lr - centerRow) * (lr - centerRow)
+            let rd = (rc - centerColumn) * (rc - centerColumn) + (rr - centerRow) * (rr - centerRow)
+            return ld < rd
+        } ?? validIndices[0]
+
+        var current = startIndex
+        var visited: Set<Int> = []
+        var result: [SurfacePoint] = []
+
+        for _ in 0..<24 {
+            if visited.contains(current) { break }
+            visited.insert(current)
+
+            let column = current % columns
+            let row = current / columns
+            result.append(
+                SurfacePoint(
+                    x: Double(column) / Double(columns - 1),
+                    y: Double(row) / Double(rows - 1)
+                )
+            )
+
+            let currentHeight = grid[current]
+            var next = current
+            var bestHeight = currentHeight
+
+            for rowOffset in -1...1 {
+                for columnOffset in -1...1 where !(rowOffset == 0 && columnOffset == 0) {
+                    let nc = column + columnOffset
+                    let nr = row + rowOffset
+                    guard nc >= 0, nc < columns, nr >= 0, nr < rows else { continue }
+                    let candidate = nr * columns + nc
+                    let candidateHeight = grid[candidate]
+                    guard candidateHeight >= 0 else { continue }
+
+                    if candidateHeight < bestHeight - 0.004 {
+                        bestHeight = candidateHeight
+                        next = candidate
+                    }
+                }
+            }
+
+            if next == current { break }
+            current = next
+        }
+
+        return result
     }
 }
 
