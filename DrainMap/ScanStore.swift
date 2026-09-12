@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 @MainActor
@@ -15,7 +16,9 @@ final class ScanStore: ObservableObject {
     }
 
     func delete(at offsets: IndexSet) {
-        records.remove(atOffsets: offsets)
+        for index in offsets.sorted(by: >) {
+            records.remove(at: index)
+        }
         save()
     }
 
