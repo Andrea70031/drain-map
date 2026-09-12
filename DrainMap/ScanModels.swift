@@ -14,8 +14,6 @@ struct ScanMetrics: Equatable {
     var sampleCount: Int = 0
     var hasMeasurement = false
 
-    // Live local surface map. Values are normalized from 0 (lowest) to 1 (highest).
-    // A negative value means that the LiDAR sample was not reliable enough.
     var surfaceGrid: [Double] = []
     var gridColumns: Int = 0
     var gridRows: Int = 0
@@ -53,6 +51,9 @@ struct ScanRecord: Identifiable, Codable, Hashable {
     let distanceMeters: Double
     let quality: Double
     let downhillAngleRadians: Double
+    let reliefMillimeters: Double?
+    let depressionMillimeters: Double?
+    let sampleCount: Int?
 
     init(metrics: ScanMetrics) {
         id = UUID()
@@ -62,5 +63,8 @@ struct ScanRecord: Identifiable, Codable, Hashable {
         distanceMeters = metrics.distanceMeters
         quality = metrics.quality
         downhillAngleRadians = metrics.downhillAngleRadians
+        reliefMillimeters = metrics.reliefMillimeters
+        depressionMillimeters = metrics.depressionMillimeters
+        sampleCount = metrics.sampleCount
     }
 }

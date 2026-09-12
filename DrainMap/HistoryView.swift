@@ -31,6 +31,9 @@ struct HistoryView: View {
                                     HStack(spacing: 12) {
                                         Label(String(format: "%.2f°", record.slopeDegrees), systemImage: "angle")
                                         Label(String(format: "%.2f m", record.distanceMeters), systemImage: "ruler")
+                                        if let relief = record.reliefMillimeters {
+                                            Label(String(format: "%.0f mm", relief), systemImage: "arrow.up.and.down")
+                                        }
                                     }
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -56,6 +59,24 @@ struct HistoryView: View {
 private struct RecordDetailView: View {
     let record: ScanRecord
 
+    private var shareText: String {
+        var lines = [
+            "DrainMap — Rilievo",
+            "Data: \(record.createdAt.formatted(date: .numeric, time: .shortened))",
+            String(format: "Pendenza: %.1f%% (%.2f°)", record.slopePercent, record.slopeDegrees),
+            String(format: "Distanza: %.2f m", record.distanceMeters),
+            String(format: "Qualità: %.0f%%", record.quality * 100)
+        ]
+        if let relief = record.reliefMillimeters {
+            lines.append(String(format: "Dislivello rilevato: %.0f mm", relief))
+        }
+        if let depression = record.depressionMillimeters {
+            lines.append(String(format: "Avvallamento stimato: %.0f mm", depression))
+        }
+        lines.append("Misura stimata tramite LiDAR. Verificare con strumenti professionali per usi tecnici o normativi.")
+        return lines.joined(separator: "\n")
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
@@ -73,6 +94,19 @@ private struct RecordDetailView: View {
                     detailCard("Qualità", String(format: "%.0f%%", record.quality * 100))
                 }
 
+                if record.reliefMillimeters != nil || record.depressionMillimeters != nil {
+                    HStack(spacing: 12) {
+                        detailCard("Dislivello", record.reliefMillimeters.map { String(format: "%.0f mm", $0) } ?? "—")
+                        detailCard("Avvallamento", record.depressionMillimeters.map { String(format: "%.0f mm", $0) } ?? "—")
+                    }
+                }
+
+                if let count = record.sampleCount {
+                    Label("Analisi basata su \(count) punti LiDAR", systemImage: "dot.scope")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 Text(record.createdAt.formatted(date: .long, time: .standard))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -81,6 +115,11 @@ private struct RecordDetailView: View {
         }
         .navigationTitle("Dettaglio")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ShareLink(item: shareText) {
+                Image(systemName: "square.and.arrow.up")
+            }
+        }
     }
 
     private func detailCard(_ title: String, _ value: String) -> some View {
@@ -92,6 +131,8 @@ private struct RecordDetailView: View {
             Text(value)
                 .font(.title3.weight(.semibold))
                 .monospacedDigit()
+                .minimumScaleFactor(0.75)
+                .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
