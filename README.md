@@ -11,6 +11,13 @@ DrainMap is a native iPhone LiDAR app for quickly checking surface slope and dra
 - Clean, futuristic HUD-style interface
 - No account, no cloud and no tracking in the first release
 
+## Road to 1.0
+1. Compile-valid native MVP and physical LiDAR test
+2. Local elevation heatmap and lowest-point detection
+3. Drain point selection and simple water-flow simulation
+4. App icon, onboarding, screenshots and App Store metadata
+5. TestFlight validation and submission
+
 ## Requirements
 - Xcode 16+
 - iOS 17+
