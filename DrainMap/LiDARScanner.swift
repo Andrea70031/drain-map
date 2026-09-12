@@ -60,6 +60,12 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
+    private struct SurfaceSample {
+        let point: SIMD3<Float>
+        let column: Int
+        let row: Int
+    }
+
     private func analyze(depthData: ARDepthData, frame: ARFrame) -> ScanMetrics? {
         let depthMap = depthData.depthMap
         let confidenceMap = depthData.confidenceMap
@@ -88,21 +94,25 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         let cx = intrinsics.columns.2.x * sx
         let cy = intrinsics.columns.2.y * sy
 
-        var points: [SIMD3<Float>] = []
+        let xStart = Int(Float(depthWidth) * 0.20)
+        let xEnd = Int(Float(depthWidth) * 0.80)
+        let yStart = Int(Float(depthHeight) * 0.25)
+        let yEnd = Int(Float(depthHeight) * 0.75)
+        let requestedColumns = 11
+        let requestedRows = 9
+        let xStep = max(1, (xEnd - xStart) / max(requestedColumns - 1, 1))
+        let yStep = max(1, (yEnd - yStart) / max(requestedRows - 1, 1))
+        let xValues = Array(stride(from: xStart, through: xEnd, by: xStep).prefix(requestedColumns))
+        let yValues = Array(stride(from: yStart, through: yEnd, by: yStep).prefix(requestedRows))
+
+        guard xValues.count >= 3, yValues.count >= 3 else { return nil }
+
+        var samples: [SurfaceSample] = []
         var depthSum: Float = 0
-        var candidateCount = 0
+        let candidateCount = xValues.count * yValues.count
 
-        let xStart = Int(Float(depthWidth) * 0.24)
-        let xEnd = Int(Float(depthWidth) * 0.76)
-        let yStart = Int(Float(depthHeight) * 0.30)
-        let yEnd = Int(Float(depthHeight) * 0.70)
-        let xStep = max(2, (xEnd - xStart) / 10)
-        let yStep = max(2, (yEnd - yStart) / 8)
-
-        for y in stride(from: yStart, through: yEnd, by: yStep) {
-            for x in stride(from: xStart, through: xEnd, by: xStep) {
-                candidateCount += 1
-
+        for (rowIndex, y) in yValues.enumerated() {
+            for (columnIndex, x) in xValues.enumerated() {
                 if let confidenceBase {
                     let confidenceRow = confidenceBase
                         .advanced(by: y * confidenceRowBytes)
@@ -120,13 +130,16 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
                 let cameraY = -(Float(y) - cy) * z / fy
                 let cameraPoint = SIMD4<Float>(cameraX, cameraY, -z, 1)
                 let worldPoint4 = frame.camera.transform * cameraPoint
-                points.append(SIMD3<Float>(worldPoint4.x, worldPoint4.y, worldPoint4.z))
+                let point = SIMD3<Float>(worldPoint4.x, worldPoint4.y, worldPoint4.z)
+
+                samples.append(SurfaceSample(point: point, column: columnIndex, row: rowIndex))
                 depthSum += z
             }
         }
 
-        guard points.count >= 24 else { return nil }
+        guard samples.count >= 24 else { return nil }
 
+        // Least-squares fit of the local surface: y = a*x + b*z + c.
         var sxx: Float = 0
         var sxz: Float = 0
         var sx1: Float = 0
@@ -136,7 +149,8 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         var szy: Float = 0
         var sy1: Float = 0
 
-        for p in points {
+        for sample in samples {
+            let p = sample.point
             sxx += p.x * p.x
             sxz += p.x * p.z
             sx1 += p.x
@@ -147,7 +161,7 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
             sy1 += p.y
         }
 
-        let n = Float(points.count)
+        let n = Float(samples.count)
         let normalMatrix = simd_float3x3(
             SIMD3<Float>(sxx, sxz, sx1),
             SIMD3<Float>(sxz, szz, sz1),
@@ -158,6 +172,7 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         let coefficients = simd_inverse(normalMatrix) * SIMD3<Float>(sxy, szy, sy1)
         let a = coefficients.x
         let b = coefficients.y
+        let c = coefficients.z
 
         let gradient = sqrt(a * a + b * b)
         let slopeDegrees = atan(gradient) * 180 / .pi
@@ -177,16 +192,45 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         let rightComponent = simd_dot(downhill, right)
         let forwardComponent = simd_dot(downhill, forward)
         let downhillAngle = atan2(rightComponent, forwardComponent)
-        let quality = min(1, Double(points.count) / Double(max(candidateCount, 1)))
+
+        let minY = samples.map(\.point.y).min() ?? 0
+        let maxY = samples.map(\.point.y).max() ?? minY
+        let verticalSpan = max(maxY - minY, 0.0001)
+        let lowestSample = samples.min { $0.point.y < $1.point.y }
+
+        var surfaceGrid = Array(repeating: -1.0, count: xValues.count * yValues.count)
+        var minimumResidual: Float = 0
+
+        for sample in samples {
+            let normalizedHeight = Double((sample.point.y - minY) / verticalSpan)
+            let index = sample.row * xValues.count + sample.column
+            if surfaceGrid.indices.contains(index) {
+                surfaceGrid[index] = min(max(normalizedHeight, 0), 1)
+            }
+
+            let fittedY = a * sample.point.x + b * sample.point.z + c
+            minimumResidual = min(minimumResidual, sample.point.y - fittedY)
+        }
+
+        let quality = min(1, Double(samples.count) / Double(max(candidateCount, 1)))
+        let lowPointX = lowestSample.map { Double($0.column) / Double(max(xValues.count - 1, 1)) } ?? 0.5
+        let lowPointY = lowestSample.map { Double($0.row) / Double(max(yValues.count - 1, 1)) } ?? 0.5
 
         return ScanMetrics(
             slopePercent: Double(slopePercent),
             slopeDegrees: Double(slopeDegrees),
-            distanceMeters: Double(depthSum / Float(points.count)),
+            distanceMeters: Double(depthSum / Float(samples.count)),
             quality: quality,
             downhillAngleRadians: Double(downhillAngle),
-            sampleCount: points.count,
-            hasMeasurement: true
+            sampleCount: samples.count,
+            hasMeasurement: true,
+            surfaceGrid: surfaceGrid,
+            gridColumns: xValues.count,
+            gridRows: yValues.count,
+            lowPointX: lowPointX,
+            lowPointY: lowPointY,
+            reliefMillimeters: Double(verticalSpan * 1000),
+            depressionMillimeters: Double(max(0, -minimumResidual) * 1000)
         )
     }
 }

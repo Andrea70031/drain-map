@@ -5,6 +5,7 @@ struct ScanView: View {
     @EnvironmentObject private var store: ScanStore
     @StateObject private var scanner = LiDARScanner()
     @State private var showSavedPulse = false
+    @State private var showSurfaceMap = true
 
     var body: some View {
         ZStack {
@@ -16,7 +17,7 @@ struct ScanView: View {
             }
 
             LinearGradient(
-                colors: [.black.opacity(0.50), .clear, .black.opacity(0.78)],
+                colors: [.black.opacity(0.50), .clear, .black.opacity(0.82)],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -27,15 +28,15 @@ struct ScanView: View {
                 statusBar
                     .padding(.top, 8)
 
-                Spacer()
+                Spacer(minLength: 12)
 
                 reticle
 
-                Spacer()
+                Spacer(minLength: 12)
 
                 measurementPanel
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
             }
         }
         .onAppear { scanner.start() }
@@ -71,11 +72,11 @@ struct ScanView: View {
     private var reticle: some View {
         ZStack {
             Circle()
-                .stroke(.cyan.opacity(0.28), lineWidth: 1)
-                .frame(width: 126, height: 126)
+                .stroke(.cyan.opacity(0.24), lineWidth: 1)
+                .frame(width: 122, height: 122)
             Circle()
                 .stroke(.cyan.opacity(0.65), style: StrokeStyle(lineWidth: 1.5, dash: [5, 8]))
-                .frame(width: 92, height: 92)
+                .frame(width: 90, height: 90)
             Rectangle().fill(.cyan.opacity(0.85)).frame(width: 30, height: 1)
             Rectangle().fill(.cyan.opacity(0.85)).frame(width: 1, height: 30)
             Circle().fill(.cyan).frame(width: 5, height: 5).shadow(color: .cyan, radius: 8)
@@ -84,17 +85,17 @@ struct ScanView: View {
     }
 
     private var measurementPanel: some View {
-        VStack(spacing: 16) {
-            HStack(alignment: .center, spacing: 18) {
+        VStack(spacing: 13) {
+            HStack(alignment: .center, spacing: 16) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("PENDENZA")
                         .font(.caption2.weight(.bold))
                         .tracking(1.8)
                         .foregroundStyle(.secondary)
 
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text(scanner.metrics.hasMeasurement ? String(format: "%.1f", scanner.metrics.slopePercent) : "—")
-                            .font(.system(size: 48, weight: .light, design: .rounded))
+                            .font(.system(size: 44, weight: .light, design: .rounded))
                             .monospacedDigit()
                         Text("%")
                             .font(.title3.weight(.semibold))
@@ -108,58 +109,165 @@ struct ScanView: View {
 
                 Spacer()
 
-                ZStack {
-                    Circle()
-                        .fill(.cyan.opacity(0.10))
-                        .frame(width: 82, height: 82)
-                    Circle()
-                        .stroke(.cyan.opacity(0.30), lineWidth: 1)
-                        .frame(width: 82, height: 82)
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 34, weight: .light))
-                        .foregroundStyle(.cyan)
-                        .rotationEffect(.radians(scanner.metrics.downhillAngleRadians))
-                        .shadow(color: .cyan.opacity(0.7), radius: 8)
+                VStack(spacing: 6) {
+                    ZStack {
+                        Circle()
+                            .fill(.cyan.opacity(0.10))
+                            .frame(width: 74, height: 74)
+                        Circle()
+                            .stroke(.cyan.opacity(0.30), lineWidth: 1)
+                            .frame(width: 74, height: 74)
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 31, weight: .light))
+                            .foregroundStyle(.cyan)
+                            .rotationEffect(.radians(scanner.metrics.downhillAngleRadians))
+                            .shadow(color: .cyan.opacity(0.7), radius: 8)
+                    }
+                    Text("DISCESA")
+                        .font(.system(size: 9, weight: .bold))
+                        .tracking(1.2)
+                        .foregroundStyle(.secondary)
                 }
             }
 
-            HStack(spacing: 10) {
+            if showSurfaceMap, scanner.metrics.hasMeasurement, !scanner.metrics.surfaceGrid.isEmpty {
+                surfaceMap
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            HStack(spacing: 8) {
                 metricChip(title: "DISTANZA", value: scanner.metrics.hasMeasurement ? String(format: "%.2f m", scanner.metrics.distanceMeters) : "—")
+                metricChip(title: "DISLIVELLO", value: scanner.metrics.reliefLabel)
                 metricChip(title: "QUALITÀ", value: scanner.metrics.hasMeasurement ? scanner.metrics.qualityLabel : "—")
             }
 
-            Button(action: saveMeasurement) {
-                HStack(spacing: 10) {
-                    Image(systemName: showSavedPulse ? "checkmark" : "plus")
-                    Text(showSavedPulse ? "Rilievo salvato" : "Salva rilievo")
-                        .fontWeight(.semibold)
+            HStack(spacing: 10) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.22)) { showSurfaceMap.toggle() }
+                } label: {
+                    Image(systemName: showSurfaceMap ? "square.grid.3x3.fill" : "square.grid.3x3")
+                        .frame(width: 48, height: 48)
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: 52)
+                .buttonStyle(.plain)
+                .foregroundStyle(.cyan)
+                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                .accessibilityLabel(showSurfaceMap ? "Nascondi mappa superficie" : "Mostra mappa superficie")
+
+                Button(action: saveMeasurement) {
+                    HStack(spacing: 10) {
+                        Image(systemName: showSavedPulse ? "checkmark" : "plus")
+                        Text(showSavedPulse ? "Rilievo salvato" : "Salva rilievo")
+                            .fontWeight(.semibold)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.black)
+                .background(scanner.metrics.hasMeasurement ? Color.cyan : Color.gray, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                .disabled(!scanner.metrics.hasMeasurement || showSavedPulse)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.black)
-            .background(scanner.metrics.hasMeasurement ? Color.cyan : Color.gray, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .disabled(!scanner.metrics.hasMeasurement || showSavedPulse)
         }
-        .padding(18)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
+        .padding(16)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
+    }
+
+    private var surfaceMap: some View {
+        VStack(spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("MAPPA SUPERFICIE")
+                        .font(.caption2.weight(.bold))
+                        .tracking(1.5)
+                    Text("Basso → alto")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                HStack(spacing: 5) {
+                    Image(systemName: "scope")
+                    Text("punto basso")
+                }
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.cyan)
+            }
+
+            GeometryReader { geometry in
+                let columns = max(scanner.metrics.gridColumns, 1)
+                let rows = max(scanner.metrics.gridRows, 1)
+                let spacing: CGFloat = 2
+                let cellWidth = max(1, (geometry.size.width - CGFloat(columns - 1) * spacing) / CGFloat(columns))
+                let cellHeight = max(1, (geometry.size.height - CGFloat(rows - 1) * spacing) / CGFloat(rows))
+
+                ZStack(alignment: .topLeading) {
+                    ForEach(Array(scanner.metrics.surfaceGrid.enumerated()), id: \.offset) { item in
+                        let index = item.offset
+                        let value = item.element
+                        let column = index % columns
+                        let row = index / columns
+
+                        RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                            .fill(surfaceColor(value))
+                            .frame(width: cellWidth, height: cellHeight)
+                            .offset(
+                                x: CGFloat(column) * (cellWidth + spacing),
+                                y: CGFloat(row) * (cellHeight + spacing)
+                            )
+                    }
+
+                    Circle()
+                        .stroke(.white, lineWidth: 1.5)
+                        .background(Circle().fill(.cyan.opacity(0.28)))
+                        .frame(width: 16, height: 16)
+                        .shadow(color: .cyan, radius: 6)
+                        .position(
+                            x: min(max(CGFloat(scanner.metrics.lowPointX) * geometry.size.width, 8), geometry.size.width - 8),
+                            y: min(max(CGFloat(scanner.metrics.lowPointY) * geometry.size.height, 8), geometry.size.height - 8)
+                        )
+                }
+            }
+            .frame(height: 70)
+            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+
+            HStack {
+                Label("Avvallamento ~\(scanner.metrics.depressionLabel)", systemImage: "arrow.down.to.line.compact")
+                Spacer()
+                Text("\(scanner.metrics.sampleCount) punti")
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+        .padding(11)
+        .background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(.cyan.opacity(0.15), lineWidth: 1))
+    }
+
+    private func surfaceColor(_ value: Double) -> Color {
+        guard value >= 0 else { return .white.opacity(0.035) }
+        // Low areas are cyan/blue; high areas move toward amber. This keeps the HUD readable
+        // without covering the camera with a heavy engineering-style rainbow heatmap.
+        let clamped = min(max(value, 0), 1)
+        let hue = 0.53 - clamped * 0.42
+        return Color(hue: hue, saturation: 0.78, brightness: 0.92)
+            .opacity(0.78)
     }
 
     private func metricChip(title: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.caption2.weight(.bold))
-                .tracking(1.2)
+                .font(.system(size: 9, weight: .bold))
+                .tracking(0.9)
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.subheadline.weight(.semibold))
+                .font(.caption.weight(.semibold))
                 .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(10)
+        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
     }
 
     private var unsupportedBackground: some View {
