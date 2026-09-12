@@ -1,0 +1,23 @@
+workflows:
+  ios-testflight:
+    name: DrainMap iOS
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.andrea70031.drainmap
+      vars:
+        XCODE_PROJECT: "DrainMap.xcodeproj"
+        XCODE_SCHEME: "DrainMap"
+    scripts:
+      - name: Set up code signing
+        script: xcode-project use-profiles
+      - name: Build IPA
+        script: |
+          xcode-project build-ipa \
+            --project "$XCODE_PROJECT" \
+            --scheme "$XCODE_SCHEME"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
