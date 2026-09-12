@@ -4,12 +4,16 @@ import UIKit
 struct ScanView: View {
     @EnvironmentObject private var store: ScanStore
     @StateObject private var scanner = LiDARScanner()
+    @AppStorage("didCompleteOnboarding") private var didCompleteOnboarding = false
     @State private var showSavedPulse = false
     @State private var showSurfaceMap = true
+    @State private var showOnboarding = false
 
     var body: some View {
         ZStack {
-            if scanner.isSupported {
+            if scanner.cameraDenied {
+                cameraDeniedBackground
+            } else if scanner.isSupported {
                 ScannerCameraView(scanner: scanner)
                     .ignoresSafeArea()
             } else {
@@ -24,23 +28,39 @@ struct ScanView: View {
             .ignoresSafeArea()
             .allowsHitTesting(false)
 
-            VStack(spacing: 0) {
-                statusBar
-                    .padding(.top, 8)
+            if !scanner.cameraDenied {
+                VStack(spacing: 0) {
+                    statusBar
+                        .padding(.top, 8)
 
-                Spacer(minLength: 12)
+                    Spacer(minLength: 12)
 
-                reticle
+                    reticle
 
-                Spacer(minLength: 12)
+                    Spacer(minLength: 12)
 
-                measurementPanel
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 10)
+                    measurementPanel
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 10)
+                }
             }
         }
-        .onAppear { scanner.start() }
+        .onAppear {
+            if didCompleteOnboarding {
+                scanner.start()
+            } else {
+                showOnboarding = true
+            }
+        }
         .onDisappear { scanner.pause() }
+        .fullScreenCover(isPresented: $showOnboarding) {
+            DrainMapOnboardingView {
+                didCompleteOnboarding = true
+                showOnboarding = false
+                scanner.start()
+            }
+            .interactiveDismissDisabled()
+        }
     }
 
     private var statusBar: some View {
@@ -274,8 +294,6 @@ struct ScanView: View {
 
     private func surfaceColor(_ value: Double) -> Color {
         guard value >= 0 else { return .white.opacity(0.035) }
-        // Low areas are cyan/blue; high areas move toward amber. This keeps the HUD readable
-        // without covering the camera with a heavy engineering-style rainbow heatmap.
         let clamped = min(max(value, 0), 1)
         let hue = 0.53 - clamped * 0.42
         return Color(hue: hue, saturation: 0.78, brightness: 0.92)
@@ -316,6 +334,33 @@ struct ScanView: View {
         }
     }
 
+    private var cameraDeniedBackground: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 16) {
+                ZStack {
+                    Circle().fill(.cyan.opacity(0.10)).frame(width: 92, height: 92)
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 34, weight: .light))
+                        .foregroundStyle(.cyan)
+                }
+                Text("Accesso alla fotocamera")
+                    .font(.title2.weight(.semibold))
+                Text("DrainMap usa fotocamera e LiDAR solo per analizzare la superficie in tempo reale. Abilita la fotocamera nelle Impostazioni per iniziare.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 30)
+                Button("Apri Impostazioni") {
+                    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                    UIApplication.shared.open(url)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.cyan)
+                .foregroundStyle(.black)
+            }
+        }
+    }
+
     private func saveMeasurement() {
         guard scanner.metrics.hasMeasurement else { return }
         store.add(ScanRecord(metrics: scanner.metrics))
@@ -324,5 +369,97 @@ struct ScanView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             withAnimation { showSavedPulse = false }
         }
+    }
+}
+
+private struct DrainMapOnboardingView: View {
+    let onContinue: () -> Void
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [Color.black, Color(red: 0.01, green: 0.07, blue: 0.09)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 26) {
+                Spacer()
+
+                ZStack {
+                    ForEach([96.0, 136.0, 176.0], id: \.self) { size in
+                        Circle()
+                            .stroke(.cyan.opacity(size == 96 ? 0.34 : 0.12), lineWidth: 1)
+                            .frame(width: size, height: size)
+                    }
+                    Image(systemName: "arrow.down.and.line.horizontal.and.arrow.up")
+                        .font(.system(size: 48, weight: .ultraLight))
+                        .foregroundStyle(.cyan)
+                        .shadow(color: .cyan.opacity(0.65), radius: 14)
+                }
+
+                VStack(spacing: 8) {
+                    Text("DRAINMAP")
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .tracking(4)
+                    Text("Leggi la superficie. Segui l’acqua.")
+                        .font(.headline.weight(.regular))
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(spacing: 12) {
+                    onboardingRow(icon: "viewfinder", title: "Inquadra", text: "Punta l’iPhone verso pavimenti, terrazze o altre superfici.")
+                    onboardingRow(icon: "square.grid.3x3.fill", title: "Analizza", text: "LiDAR calcola pendenza, dislivello, punto basso e irregolarità.")
+                    onboardingRow(icon: "drop.fill", title: "Segui il deflusso", text: "La mappa mostra una stima del percorso naturale verso le zone più basse.")
+                }
+                .padding(.horizontal, 22)
+
+                Spacer()
+
+                VStack(spacing: 12) {
+                    Button(action: onContinue) {
+                        Text("Avvia scansione")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 52)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.black)
+                    .background(.cyan, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+
+                    Text("Richiede un iPhone con LiDAR. L’elaborazione avviene sul dispositivo e non richiede account.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, 22)
+                .padding(.bottom, 22)
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func onboardingRow(icon: String, title: String, text: String) -> some View {
+        HStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(.cyan.opacity(0.10))
+                    .frame(width: 48, height: 48)
+                Image(systemName: icon)
+                    .foregroundStyle(.cyan)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.subheadline.weight(.semibold))
+                Text(text)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(13)
+        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.07), lineWidth: 1))
     }
 }

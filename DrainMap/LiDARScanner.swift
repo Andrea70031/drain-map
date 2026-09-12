@@ -1,4 +1,5 @@
 import ARKit
+import AVFoundation
 import Combine
 import CoreVideo
 import Foundation
@@ -12,6 +13,7 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
     @Published private(set) var metrics = ScanMetrics()
     @Published private(set) var isSupported = true
     @Published private(set) var isRunning = false
+    @Published private(set) var cameraDenied = false
 
     private var lastProcessedTimestamp: TimeInterval = 0
 
@@ -23,10 +25,43 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
     func start() {
         guard ARWorldTrackingConfiguration.isSupported,
               ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) else {
-            DispatchQueue.main.async { self.isSupported = false }
+            DispatchQueue.main.async {
+                self.isSupported = false
+                self.isRunning = false
+            }
             return
         }
 
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            DispatchQueue.main.async { self.cameraDenied = false }
+            startSession()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard let self else { return }
+                if granted {
+                    self.start()
+                } else {
+                    DispatchQueue.main.async {
+                        self.cameraDenied = true
+                        self.isRunning = false
+                    }
+                }
+            }
+        case .denied, .restricted:
+            DispatchQueue.main.async {
+                self.cameraDenied = true
+                self.isRunning = false
+            }
+        @unknown default:
+            DispatchQueue.main.async {
+                self.cameraDenied = true
+                self.isRunning = false
+            }
+        }
+    }
+
+    private func startSession() {
         let configuration = ARWorldTrackingConfiguration()
         configuration.worldAlignment = .gravity
         configuration.planeDetection = [.horizontal]
@@ -139,7 +174,6 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
 
         guard samples.count >= 24 else { return nil }
 
-        // Least-squares fit of the local surface: y = a*x + b*z + c.
         var sxx: Float = 0
         var sxz: Float = 0
         var sx1: Float = 0
