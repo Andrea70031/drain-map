@@ -26,11 +26,25 @@ jobs:
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
-            build | tee xcodebuild.log
+            build | tee xcodebuild-simulator.log
 
-      - name: Upload build log on failure
+      - name: Build for physical iOS SDK
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project DrainMap.xcodeproj \
+            -scheme DrainMap \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee xcodebuild-device.log
+
+      - name: Upload build logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: xcodebuild-log
-          path: xcodebuild.log
+          name: xcodebuild-logs
+          path: |
+            xcodebuild-simulator.log
+            xcodebuild-device.log
