@@ -3,7 +3,7 @@ import SceneKit
 import SwiftUI
 import UIKit
 
-class SlopeARRenderer {
+final class SlopeARRenderer {
     func makeSurfaceNode(surface: SurfaceGeometrySnapshot, opacity: Float = 0.60) -> SCNNode {
         let geometry = makeGeometry(surface: surface, mode: .altimetry, opacity: opacity)
         let node = SCNNode(geometry: geometry)
@@ -16,42 +16,16 @@ class SlopeARRenderer {
         let vertices = surface.vertices.map { SCNVector3($0.x, $0.y, $0.z) }
         let vertexSource = SCNGeometrySource(vertices: vertices)
 
-        var colors: [SIMD4<Float>] = []
-        colors.reserveCapacity(surface.vertices.count)
-
-        for index in surface.vertices.indices {
-            guard surface.validMask.indices.contains(index), surface.validMask[index] else {
-                colors.append(SIMD4<Float>(0, 0, 0, 0))
-                continue
-            }
-            let normalized = surface.normalizedHeights.indices.contains(index) ? surface.normalizedHeights[index] : 0.5
-            switch mode {
-            case .altimetry:
-                var c = heatColor(normalized)
-                c.w = opacity
-                colors.append(c)
-            case .water:
-                let depression = surface.depressionGrid.indices.contains(index) ? max(surface.depressionGrid[index], 0) : 0
-                let low = 1 - normalized
-                let intensity = min(Float(depression / 18.0), 1)
-                let alpha = min(0.30 + low * 0.26 + intensity * 0.20, 0.76)
-                colors.append(SIMD4<Float>(0.01, 0.40 + low * 0.18, 1.0, alpha))
-            case .camera:
-                colors.append(SIMD4<Float>(0, 0, 0, 0))
+        var textureCoordinates: [CGPoint] = []
+        textureCoordinates.reserveCapacity(surface.vertices.count)
+        for row in 0..<surface.rows {
+            let v = 1 - CGFloat(row) / CGFloat(max(surface.rows - 1, 1))
+            for column in 0..<surface.columns {
+                let u = CGFloat(column) / CGFloat(max(surface.columns - 1, 1))
+                textureCoordinates.append(CGPoint(x: u, y: v))
             }
         }
-
-        let colorData = colors.withUnsafeBytes { Data($0) }
-        let colorSource = SCNGeometrySource(
-            data: colorData,
-            semantic: .color,
-            vectorCount: colors.count,
-            usesFloatComponents: true,
-            componentsPerVector: 4,
-            bytesPerComponent: MemoryLayout<Float>.size,
-            dataOffset: 0,
-            dataStride: MemoryLayout<SIMD4<Float>>.stride
-        )
+        let textureSource = SCNGeometrySource(textureCoordinates: textureCoordinates)
 
         let indexData = surface.triangleIndices.withUnsafeBytes { Data($0) }
         let element = SCNGeometryElement(
@@ -61,37 +35,102 @@ class SlopeARRenderer {
             bytesPerIndex: MemoryLayout<UInt32>.size
         )
 
-        let geometry = SCNGeometry(sources: [vertexSource, colorSource], elements: [element])
+        let geometry = SCNGeometry(sources: [vertexSource, textureSource], elements: [element])
         let material = SCNMaterial()
         material.lightingModel = .constant
-        material.diffuse.contents = UIColor.white
-        material.emission.contents = UIColor.white.withAlphaComponent(0.08)
+        material.diffuse.contents = makeTexture(surface: surface, mode: mode, opacity: opacity)
+        material.diffuse.magnificationFilter = .linear
+        material.diffuse.minificationFilter = .linear
+        material.diffuse.mipFilter = .linear
+        material.diffuse.wrapS = .clamp
+        material.diffuse.wrapT = .clamp
         material.isDoubleSided = true
         material.blendMode = .alpha
-        material.transparencyMode = .dualLayer
+        material.transparencyMode = .aOne
         material.readsFromDepthBuffer = true
         material.writesToDepthBuffer = false
         geometry.materials = [material]
         return geometry
     }
 
+    private func makeTexture(surface: SurfaceGeometrySnapshot, mode: SurfaceRenderMode, opacity: Float) -> UIImage {
+        let width = max(surface.columns, 2)
+        let height = max(surface.rows, 2)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        format.opaque = false
+
+        return UIGraphicsImageRenderer(
+            size: CGSize(width: CGFloat(width), height: CGFloat(height)),
+            format: format
+        ).image { context in
+            context.cgContext.clear(CGRect(x: 0, y: 0, width: width, height: height))
+            context.cgContext.interpolationQuality = .high
+
+            for row in 0..<surface.rows {
+                for column in 0..<surface.columns {
+                    let index = row * surface.columns + column
+                    guard surface.validMask.indices.contains(index), surface.validMask[index] else { continue }
+
+                    let normalized = surface.normalizedHeights.indices.contains(index)
+                        ? surface.normalizedHeights[index]
+                        : 0.5
+
+                    let color: SIMD4<Float>
+                    switch mode {
+                    case .altimetry:
+                        var heat = heatColor(normalized)
+                        heat.w = opacity
+                        color = heat
+                    case .water:
+                        let depression = surface.depressionGrid.indices.contains(index)
+                            ? max(surface.depressionGrid[index], 0)
+                            : 0
+                        let low = 1 - normalized
+                        let accumulation = min(Float(depression / 18.0), 1)
+                        let alpha = min(0.26 + low * 0.24 + accumulation * 0.28, 0.78)
+                        color = SIMD4<Float>(0.01, 0.42 + low * 0.16, 1.0, alpha)
+                    case .camera:
+                        color = SIMD4<Float>(0, 0, 0, 0)
+                    }
+
+                    let uiColor = UIColor(
+                        red: CGFloat(color.x),
+                        green: CGFloat(color.y),
+                        blue: CGFloat(color.z),
+                        alpha: CGFloat(color.w)
+                    )
+                    uiColor.setFill()
+                    context.cgContext.fill(
+                        CGRect(
+                            x: CGFloat(column) - 0.04,
+                            y: CGFloat(row) - 0.04,
+                            width: 1.08,
+                            height: 1.08
+                        )
+                    )
+                }
+            }
+        }
+    }
+
     private func heatColor(_ value: Float) -> SIMD4<Float> {
         let t = min(max(value, 0), 1)
-        if t < 0.20 {
-            let u = t / 0.20
-            return mix(SIMD4<Float>(0.02, 0.20, 1.0, 1), SIMD4<Float>(0.0, 0.90, 1.0, 1), u)
-        } else if t < 0.42 {
-            let u = (t - 0.20) / 0.22
-            return mix(SIMD4<Float>(0.0, 0.90, 1.0, 1), SIMD4<Float>(0.0, 0.92, 0.28, 1), u)
-        } else if t < 0.64 {
-            let u = (t - 0.42) / 0.22
-            return mix(SIMD4<Float>(0.0, 0.92, 0.28, 1), SIMD4<Float>(1.0, 0.94, 0.0, 1), u)
+        if t < 0.18 {
+            let u = t / 0.18
+            return mix(SIMD4<Float>(0.00, 0.16, 1.00, 1), SIMD4<Float>(0.00, 0.82, 1.00, 1), u)
+        } else if t < 0.40 {
+            let u = (t - 0.18) / 0.22
+            return mix(SIMD4<Float>(0.00, 0.82, 1.00, 1), SIMD4<Float>(0.00, 0.90, 0.30, 1), u)
+        } else if t < 0.62 {
+            let u = (t - 0.40) / 0.22
+            return mix(SIMD4<Float>(0.00, 0.90, 0.30, 1), SIMD4<Float>(1.00, 0.94, 0.00, 1), u)
         } else if t < 0.82 {
-            let u = (t - 0.64) / 0.18
-            return mix(SIMD4<Float>(1.0, 0.94, 0.0, 1), SIMD4<Float>(1.0, 0.46, 0.0, 1), u)
+            let u = (t - 0.62) / 0.20
+            return mix(SIMD4<Float>(1.00, 0.94, 0.00, 1), SIMD4<Float>(1.00, 0.42, 0.00, 1), u)
         } else {
             let u = (t - 0.82) / 0.18
-            return mix(SIMD4<Float>(1.0, 0.46, 0.0, 1), SIMD4<Float>(1.0, 0.03, 0.02, 1), u)
+            return mix(SIMD4<Float>(1.00, 0.42, 0.00, 1), SIMD4<Float>(1.00, 0.02, 0.02, 1), u)
         }
     }
 
@@ -167,7 +206,7 @@ final class ARSurfaceSceneView: ARSCNView {
     ) {
         let signature: String
         if let surface {
-            signature = "\(surface.metrics.sampleCount)-\(surface.metrics.coverage)-\(mode)-\(rainIntensity)-\(animateWater)"
+            signature = "\(surface.metrics.sampleCount)-\(surface.metrics.coverage)-\(surface.metrics.reliefMillimeters)-\(mode)-\(rainIntensity)-\(animateWater)"
         } else {
             signature = "empty-\(mode)"
         }
@@ -179,11 +218,11 @@ final class ARSurfaceSceneView: ARSCNView {
         surfaceNode = nil
         flowRoot = nil
 
-        guard let surface, mode != .camera else { return }
+        guard let surface, surface.isValid, mode != .camera else { return }
 
         let node = slopeRenderer.makeSurfaceNode(
             surface: surface,
-            opacity: mode == .water ? 0.50 : 0.62
+            opacity: mode == .water ? 0.50 : 0.60
         )
         if mode == .water {
             node.geometry = slopeRenderer.makeGeometry(surface: surface, mode: .water, opacity: 0.56)
