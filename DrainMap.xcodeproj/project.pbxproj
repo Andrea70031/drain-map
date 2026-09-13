@@ -16,6 +16,16 @@
 		A00000000000000000000008 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000008 /* SettingsView.swift */; };
 		A00000000000000000000009 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000A /* PrivacyInfo.xcprivacy */; };
 		A0000000000000000000000A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000C /* Assets.xcassets */; };
+		A0000000000000000000000B /* SurfaceGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000D /* SurfaceGeometry.swift */; };
+		A0000000000000000000000C /* ScanQualityEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000E /* ScanQualityEngine.swift */; };
+		A0000000000000000000000D /* SurfaceReconstructionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000F /* SurfaceReconstructionEngine.swift */; };
+		A0000000000000000000000E /* WaterFlowEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000010 /* WaterFlowEngine.swift */; };
+		A0000000000000000000000F /* LiDARAcquisitionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000011 /* LiDARAcquisitionEngine.swift */; };
+		A00000000000000000000010 /* SlopeARRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000012 /* SlopeARRenderer.swift */; };
+		A00000000000000000000011 /* WaterARRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000013 /* WaterARRenderer.swift */; };
+		A00000000000000000000012 /* ProfessionalScanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000014 /* ProfessionalScanView.swift */; };
+		A00000000000000000000013 /* ProfessionalAnalysisView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000015 /* ProfessionalAnalysisView.swift */; };
+		A00000000000000000000014 /* ProfessionalReportBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000016 /* ProfessionalReportBuilder.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -31,6 +41,16 @@
 		B0000000000000000000000A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		B0000000000000000000000B /* DrainMap.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DrainMap.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B0000000000000000000000C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B0000000000000000000000D /* SurfaceGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurfaceGeometry.swift; sourceTree = "<group>"; };
+		B0000000000000000000000E /* ScanQualityEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanQualityEngine.swift; sourceTree = "<group>"; };
+		B0000000000000000000000F /* SurfaceReconstructionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurfaceReconstructionEngine.swift; sourceTree = "<group>"; };
+		B00000000000000000000010 /* WaterFlowEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaterFlowEngine.swift; sourceTree = "<group>"; };
+		B00000000000000000000011 /* LiDARAcquisitionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiDARAcquisitionEngine.swift; sourceTree = "<group>"; };
+		B00000000000000000000012 /* SlopeARRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlopeARRenderer.swift; sourceTree = "<group>"; };
+		B00000000000000000000013 /* WaterARRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaterARRenderer.swift; sourceTree = "<group>"; };
+		B00000000000000000000014 /* ProfessionalScanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfessionalScanView.swift; sourceTree = "<group>"; };
+		B00000000000000000000015 /* ProfessionalAnalysisView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfessionalAnalysisView.swift; sourceTree = "<group>"; };
+		B00000000000000000000016 /* ProfessionalReportBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfessionalReportBuilder.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -52,8 +72,18 @@
 				B00000000000000000000001 /* DrainMapApp.swift */,
 				B00000000000000000000002 /* RootView.swift */,
 				B00000000000000000000003 /* ScanModels.swift */,
+				B0000000000000000000000D /* SurfaceGeometry.swift */,
 				B00000000000000000000004 /* ScanStore.swift */,
+				B00000000000000000000011 /* LiDARAcquisitionEngine.swift */,
+				B0000000000000000000000F /* SurfaceReconstructionEngine.swift */,
+				B0000000000000000000000E /* ScanQualityEngine.swift */,
+				B00000000000000000000010 /* WaterFlowEngine.swift */,
 				B00000000000000000000005 /* LiDARScanner.swift */,
+				B00000000000000000000012 /* SlopeARRenderer.swift */,
+				B00000000000000000000013 /* WaterARRenderer.swift */,
+				B00000000000000000000014 /* ProfessionalScanView.swift */,
+				B00000000000000000000015 /* ProfessionalAnalysisView.swift */,
+				B00000000000000000000016 /* ProfessionalReportBuilder.swift */,
 				B00000000000000000000006 /* ScanView.swift */,
 				B00000000000000000000007 /* HistoryView.swift */,
 				B00000000000000000000008 /* SettingsView.swift */,
@@ -129,6 +159,16 @@
 				A00000000000000000000006 /* ScanView.swift in Sources */,
 				A00000000000000000000007 /* HistoryView.swift in Sources */,
 				A00000000000000000000008 /* SettingsView.swift in Sources */,
+				A0000000000000000000000B /* SurfaceGeometry.swift in Sources */,
+				A0000000000000000000000C /* ScanQualityEngine.swift in Sources */,
+				A0000000000000000000000D /* SurfaceReconstructionEngine.swift in Sources */,
+				A0000000000000000000000E /* WaterFlowEngine.swift in Sources */,
+				A0000000000000000000000F /* LiDARAcquisitionEngine.swift in Sources */,
+				A00000000000000000000010 /* SlopeARRenderer.swift in Sources */,
+				A00000000000000000000011 /* WaterARRenderer.swift in Sources */,
+				A00000000000000000000012 /* ProfessionalScanView.swift in Sources */,
+				A00000000000000000000013 /* ProfessionalAnalysisView.swift in Sources */,
+				A00000000000000000000014 /* ProfessionalReportBuilder.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -137,8 +177,8 @@
 /* Begin XCBuildConfiguration section */
 		100000000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; GCC_OPTIMIZATION_LEVEL = 0; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_VERSION = 5.0;}; name = Debug;};
 		100000000000000000000002 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_OPTIMIZATION_LEVEL = "-O"; SWIFT_VERSION = 5.0;}; name = Release;};
-		100000000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 4; DEVELOPMENT_ASSET_PATHS = ""; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = DrainMap/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.andrea70031.drainmap; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; TARGETED_DEVICE_FAMILY = 1; SWIFT_VERSION = 5.0;}; name = Debug;};
-		100000000000000000000004 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 4; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = DrainMap/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.andrea70031.drainmap; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; TARGETED_DEVICE_FAMILY = 1; SWIFT_VERSION = 5.0;}; name = Release;};
+		100000000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 7; DEVELOPMENT_ASSET_PATHS = ""; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = DrainMap/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.andrea70031.drainmap; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; TARGETED_DEVICE_FAMILY = 1; SWIFT_VERSION = 5.0;}; name = Debug;};
+		100000000000000000000004 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 7; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = DrainMap/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.andrea70031.drainmap; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; TARGETED_DEVICE_FAMILY = 1; SWIFT_VERSION = 5.0;}; name = Release;};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
