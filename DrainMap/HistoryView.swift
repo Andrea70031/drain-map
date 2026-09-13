@@ -10,7 +10,7 @@ struct HistoryView: View {
                     ContentUnavailableView(
                         "Nessun rilievo",
                         systemImage: "viewfinder.circle",
-                        description: Text("I rilievi salvati appariranno qui.")
+                        description: Text("Le scansioni salvate con mappa, pendenze e deflusso appariranno qui.")
                     )
                 } else {
                     List {
@@ -18,25 +18,39 @@ struct HistoryView: View {
                             NavigationLink {
                                 RecordDetailView(record: record)
                             } label: {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack {
-                                        Text(String(format: "%.1f%%", record.slopePercent))
-                                            .font(.title3.weight(.semibold))
-                                            .monospacedDigit()
-                                        Spacer()
+                                HStack(spacing: 13) {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                            .fill(.cyan.opacity(0.10))
+                                            .frame(width: 54, height: 54)
+                                        Image(systemName: "square.grid.3x3.fill")
+                                            .foregroundStyle(.cyan)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        HStack {
+                                            Text(String(format: "%.1f%%", record.slopePercent))
+                                                .font(.title3.weight(.semibold))
+                                                .monospacedDigit()
+                                            Text("pendenza")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                            Spacer()
+                                        }
+
+                                        HStack(spacing: 10) {
+                                            Label(record.reliefMillimeters.map { String(format: "%.0f mm", $0) } ?? "—", systemImage: "arrow.up.and.down")
+                                            if let coverage = record.coverage {
+                                                Label("\(Int(coverage * 100))%", systemImage: "viewfinder")
+                                            }
+                                        }
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+
                                         Text(record.createdAt.formatted(date: .abbreviated, time: .shortened))
-                                            .font(.caption)
+                                            .font(.caption2)
                                             .foregroundStyle(.secondary)
                                     }
-                                    HStack(spacing: 12) {
-                                        Label(String(format: "%.2f°", record.slopeDegrees), systemImage: "angle")
-                                        Label(String(format: "%.2f m", record.distanceMeters), systemImage: "ruler")
-                                        if let relief = record.reliefMillimeters {
-                                            Label(String(format: "%.0f mm", relief), systemImage: "arrow.up.and.down")
-                                        }
-                                    }
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
                                 }
                                 .padding(.vertical, 4)
                             }
@@ -58,24 +72,9 @@ struct HistoryView: View {
 
 private struct RecordDetailView: View {
     let record: ScanRecord
+    @State private var showFullAnalysis = false
 
-    private var shareText: String {
-        var lines = [
-            "DrainMap — Rilievo",
-            "Data: \(record.createdAt.formatted(date: .numeric, time: .shortened))",
-            String(format: "Pendenza: %.1f%% (%.2f°)", record.slopePercent, record.slopeDegrees),
-            String(format: "Distanza: %.2f m", record.distanceMeters),
-            String(format: "Qualità: %.0f%%", record.quality * 100)
-        ]
-        if let relief = record.reliefMillimeters {
-            lines.append(String(format: "Dislivello rilevato: %.0f mm", relief))
-        }
-        if let depression = record.depressionMillimeters {
-            lines.append(String(format: "Avvallamento stimato: %.0f mm", depression))
-        }
-        lines.append("Misura stimata tramite LiDAR. Verificare con strumenti professionali per usi tecnici o normativi.")
-        return lines.joined(separator: "\n")
-    }
+    private var metrics: ScanMetrics { record.metricsSnapshot }
 
     var body: some View {
         ScrollView {
@@ -86,26 +85,63 @@ private struct RecordDetailView: View {
                         .monospacedDigit()
                     Text(String(format: "%.2f°", record.slopeDegrees))
                         .foregroundStyle(.secondary)
+                    Text("Pendenza media")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.cyan)
                 }
-                .padding(.top, 24)
+                .padding(.top, 22)
 
                 HStack(spacing: 12) {
-                    detailCard("Distanza", String(format: "%.2f m", record.distanceMeters))
-                    detailCard("Qualità", String(format: "%.0f%%", record.quality * 100))
+                    detailCard("Quota min", metrics.minimumHeightLabel, "arrow.down.to.line.compact")
+                    detailCard("Quota max", metrics.maximumHeightLabel, "arrow.up.to.line.compact")
                 }
 
-                if record.reliefMillimeters != nil || record.depressionMillimeters != nil {
-                    HStack(spacing: 12) {
-                        detailCard("Dislivello", record.reliefMillimeters.map { String(format: "%.0f mm", $0) } ?? "—")
-                        detailCard("Avvallamento", record.depressionMillimeters.map { String(format: "%.0f mm", $0) } ?? "—")
+                HStack(spacing: 12) {
+                    detailCard("Dislivello", metrics.reliefLabel, "arrow.up.and.down")
+                    detailCard("Avvallamento", metrics.depressionLabel, "drop.triangle")
+                }
+
+                HStack(spacing: 12) {
+                    detailCard("Copertura", metrics.coverageLabel, "viewfinder")
+                    detailCard("Qualità", metrics.qualityLabel, "checkmark.seal")
+                }
+
+                Button {
+                    showFullAnalysis = true
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "square.grid.2x2.fill")
+                        Text("Apri analisi completa")
+                            .fontWeight(.semibold)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 54)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.black)
+                .background(Color.cyan, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("ANALISI")
+                        .font(.caption2.weight(.bold))
+                        .tracking(1.2)
+                        .foregroundStyle(.secondary)
+
+                    ForEach(metrics.issues) { issue in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: issue.systemImage)
+                                .foregroundStyle(issue.severity == .critical ? .red : issue.severity == .warning ? .orange : .green)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(issue.title).font(.subheadline.weight(.semibold))
+                                Text(issue.detail).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
                     }
                 }
-
-                if let count = record.sampleCount {
-                    Label("Analisi basata su \(count) punti LiDAR", systemImage: "dot.scope")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(15)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
                 Text(record.createdAt.formatted(date: .long, time: .standard))
                     .font(.footnote)
@@ -113,20 +149,20 @@ private struct RecordDetailView: View {
             }
             .padding()
         }
-        .navigationTitle("Dettaglio")
+        .navigationTitle("Rilievo")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ShareLink(item: shareText) {
-                Image(systemName: "square.and.arrow.up")
-            }
+        .fullScreenCover(isPresented: $showFullAnalysis) {
+            DrainMapAnalysisStudio(metrics: metrics, measuredAt: record.createdAt)
         }
     }
 
-    private func detailCard(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private func detailCard(_ title: String, _ value: String, _ icon: String) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Image(systemName: icon)
+                .foregroundStyle(.cyan)
             Text(title.uppercased())
                 .font(.caption2.weight(.bold))
-                .tracking(1.1)
+                .tracking(0.9)
                 .foregroundStyle(.secondary)
             Text(value)
                 .font(.title3.weight(.semibold))
