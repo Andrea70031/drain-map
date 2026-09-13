@@ -120,7 +120,7 @@ struct ScannerCameraView: UIViewRepresentable {
     var animateWater = true
 
     func makeUIView(context: Context) -> ARSurfaceSceneView {
-        let view = ARSurfaceSceneView()
+        let view = ARSurfaceSceneView(frame: .zero)
         view.session = scanner.session
         return view
     }
