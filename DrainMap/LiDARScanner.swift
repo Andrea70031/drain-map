@@ -13,6 +13,7 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
     @Published private(set) var metrics = ScanMetrics()
     @Published private(set) var isSupported = true
     @Published private(set) var isRunning = false
+    @Published private(set) var isMeasuring = false
     @Published private(set) var cameraDenied = false
 
     private var lastProcessedTimestamp: TimeInterval = 0
@@ -29,6 +30,7 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
             DispatchQueue.main.async {
                 self.isSupported = false
                 self.isRunning = false
+                self.isMeasuring = false
             }
             return
         }
@@ -46,6 +48,7 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
                     DispatchQueue.main.async {
                         self.cameraDenied = true
                         self.isRunning = false
+                        self.isMeasuring = false
                     }
                 }
             }
@@ -53,17 +56,21 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
             DispatchQueue.main.async {
                 self.cameraDenied = true
                 self.isRunning = false
+                self.isMeasuring = false
             }
         @unknown default:
             DispatchQueue.main.async {
                 self.cameraDenied = true
                 self.isRunning = false
+                self.isMeasuring = false
             }
         }
     }
 
     private func startSession() {
         previousMetrics = nil
+        lastProcessedTimestamp = 0
+
         let configuration = ARWorldTrackingConfiguration()
         configuration.worldAlignment = .gravity
         configuration.planeDetection = [.horizontal]
@@ -76,16 +83,39 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         DispatchQueue.main.async {
             self.isSupported = true
             self.isRunning = true
+            self.isMeasuring = false
+            self.metrics = ScanMetrics()
         }
+    }
+
+    func beginMeasurement() {
+        guard isRunning else { return }
+        previousMetrics = nil
+        lastProcessedTimestamp = 0
+        metrics = ScanMetrics()
+        isMeasuring = true
+    }
+
+    func finishMeasurement() {
+        isMeasuring = false
+    }
+
+    func cancelMeasurement() {
+        isMeasuring = false
+        previousMetrics = nil
+        metrics = ScanMetrics()
     }
 
     func pause() {
         session.pause()
-        DispatchQueue.main.async { self.isRunning = false }
+        DispatchQueue.main.async {
+            self.isRunning = false
+            self.isMeasuring = false
+        }
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        guard isRunning else { return }
+        guard isRunning, isMeasuring else { return }
         guard frame.timestamp - lastProcessedTimestamp > 0.12 else { return }
         lastProcessedTimestamp = frame.timestamp
 
@@ -132,6 +162,7 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         let cx = intrinsics.columns.2.x * sx
         let cy = intrinsics.columns.2.y * sy
 
+        // Questa è esattamente la zona evidenziata dal riquadro nell'interfaccia.
         let xStart = Int(Float(depthWidth) * 0.20)
         let xEnd = Int(Float(depthWidth) * 0.80)
         let yStart = Int(Float(depthHeight) * 0.25)
