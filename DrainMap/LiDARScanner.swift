@@ -17,7 +17,7 @@ final class LiDARScanner: ObservableObject {
     @Published private(set) var cameraDenied = false
 
     private let acquisition = LiDARAcquisitionEngine(maximumStoredPoints: 50_000)
-    private let reconstruction = SurfaceReconstructionEngine(columns: 37, rows: 29)
+    private let reconstruction = SurfaceReconstructionEngine(columns: 33, rows: 25)
     private let waterEngine = WaterFlowEngine()
     private let qualityEngine = ScanQualityEngine(minimumPoints: 15_000, minimumCoverage: 0.60)
     private let analysisQueue = DispatchQueue(label: "DrainMap.surface.analysis", qos: .userInitiated)
@@ -61,22 +61,27 @@ final class LiDARScanner: ObservableObject {
         waterFlow = .empty
         metrics = ScanMetrics()
         acquiredPointCount = 0
-        qualityAssessment = ScanQualityAssessment(score: 0, isSufficient: false, warning: "Acquisizione in corso…")
+        qualityAssessment = ScanQualityAssessment(score: 0, isSufficient: false, warning: "Acquisizione in corso: inquadra soprattutto il pavimento.")
         lastLiveAnalysisDate = .distantPast
         acquisition.beginMeasurement()
     }
 
     @discardableResult
     func finishMeasurement() -> ScanMetrics? {
-        let snapshot = acquisition.snapshot(limit: 32_000)
+        let snapshot = acquisition.snapshot(limit: 36_000)
         guard snapshot.pointCount >= minimumRequiredPoints,
               let rawSurface = reconstruction.reconstruct(
                 points: snapshot.points,
                 cameraTransform: snapshot.cameraTransform,
                 averageDepth: snapshot.averageDepth,
                 meshAnchorCount: snapshot.meshAnchorCount,
-                pointLimit: 28_000
+                pointLimit: 32_000
               ) else {
+            qualityAssessment = ScanQualityAssessment(
+                score: 0,
+                isSufficient: false,
+                warning: "Superficie non affidabile: evita mobili e pareti e ripassa lentamente il pavimento."
+            )
             return nil
         }
 
@@ -119,13 +124,13 @@ final class LiDARScanner: ObservableObject {
 
     private func scheduleLiveReconstructionIfNeeded() {
         guard isMeasuring else { return }
-        guard acquiredPointCount >= 700 else { return }
+        guard acquiredPointCount >= 600 else { return }
         guard !isAnalysisRunning else { return }
-        guard Date().timeIntervalSince(lastLiveAnalysisDate) >= 0.45 else { return }
+        guard Date().timeIntervalSince(lastLiveAnalysisDate) >= 0.38 else { return }
 
         isAnalysisRunning = true
         lastLiveAnalysisDate = Date()
-        let snapshot = acquisition.snapshot(limit: 14_000)
+        let snapshot = acquisition.snapshot(limit: 18_000)
 
         analysisQueue.async { [weak self] in
             guard let self else { return }
@@ -134,12 +139,23 @@ final class LiDARScanner: ObservableObject {
                 cameraTransform: snapshot.cameraTransform,
                 averageDepth: snapshot.averageDepth,
                 meshAnchorCount: snapshot.meshAnchorCount,
-                pointLimit: 12_000
+                pointLimit: 16_000
             )
 
             DispatchQueue.main.async {
                 defer { self.isAnalysisRunning = false }
-                guard self.isMeasuring, let surface else { return }
+                guard self.isMeasuring else { return }
+
+                guard let surface else {
+                    if snapshot.pointCount >= 4_000 {
+                        self.qualityAssessment = ScanQualityAssessment(
+                            score: 0.28,
+                            isSufficient: false,
+                            warning: "Non riconosco ancora un pavimento continuo: abbassa l’inquadratura ed evita pareti e mobili."
+                        )
+                    }
+                    return
+                }
 
                 let assessment = self.qualityEngine.evaluate(
                     pointCount: snapshot.pointCount,
