@@ -769,11 +769,7 @@ struct ScannerCameraView: UIViewRepresentable {
 
     func updateUIView(_ uiView: LiveScannerContainerView, context: Context) {
         uiView.sceneView.session = scanner.session
-        if scanner.supportsMeshReconstruction && scanner.isMeasuring {
-            uiView.sceneView.debugOptions = [.showSceneUnderstanding]
-        } else {
-            uiView.sceneView.debugOptions = []
-        }
+        uiView.sceneView.debugOptions = []
         uiView.flowOverlay.update(metrics: scanner.metrics,
                                   frame: scanner.session.currentFrame,
                                   measuring: scanner.isMeasuring)
