@@ -6,11 +6,11 @@ struct RootView: View {
             ScanView()
                 .tabItem { Label("Scansione", systemImage: "viewfinder") }
 
-            HistoryView()
-                .tabItem { Label("Rilievi", systemImage: "clock.arrow.circlepath") }
-
             SettingsView()
-                .tabItem { Label("Info", systemImage: "info.circle") }
+                .tabItem { Label("Manuale", systemImage: "book.closed") }
+
+            HistoryView()
+                .tabItem { Label("Libreria", systemImage: "square.stack.3d.up") }
         }
         .tint(.cyan)
     }
