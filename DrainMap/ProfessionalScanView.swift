@@ -15,6 +15,12 @@ struct ProfessionalScanView: View {
         min(scanner.metrics.coverage / scanner.minimumRequiredCoverage, 1)
     }
 
+    private var liveValuesReliable: Bool {
+        scanner.metrics.hasMeasurement &&
+        scanner.metrics.coverage >= 0.30 &&
+        scanner.qualityAssessment.score >= 0.45
+    }
+
     var body: some View {
         ZStack {
             if scanner.cameraDenied {
@@ -112,11 +118,11 @@ struct ProfessionalScanView: View {
             .frame(width: 13, height: 112)
             .clipShape(RoundedRectangle(cornerRadius: 4))
             VStack(alignment: .leading) {
-                Text(scanner.metrics.hasMeasurement ? scanner.metrics.maximumHeightLabel : "+")
+                Text(liveValuesReliable ? scanner.metrics.maximumHeightLabel : "—")
                 Spacer()
                 Text("0 mm")
                 Spacer()
-                Text(scanner.metrics.hasMeasurement ? scanner.metrics.minimumHeightLabel : "−")
+                Text(liveValuesReliable ? scanner.metrics.minimumHeightLabel : "—")
             }
             .font(.caption2.weight(.semibold))
             .monospacedDigit()
@@ -129,10 +135,10 @@ struct ProfessionalScanView: View {
 
     private var liveReadout: some View {
         HStack(spacing: 7) {
-            liveMetric("PENDENZA", scanner.metrics.hasMeasurement ? String(format: "%.1f%%", scanner.metrics.slopePercent) : "—")
-            liveMetric("MIN", scanner.metrics.minimumHeightLabel)
-            liveMetric("MAX", scanner.metrics.maximumHeightLabel)
-            liveMetric("Δ", scanner.metrics.reliefLabel)
+            liveMetric("PENDENZA", liveValuesReliable ? String(format: "%.1f%%", scanner.metrics.slopePercent) : "—")
+            liveMetric("MIN", liveValuesReliable ? scanner.metrics.minimumHeightLabel : "—")
+            liveMetric("MAX", liveValuesReliable ? scanner.metrics.maximumHeightLabel : "—")
+            liveMetric("Δ", liveValuesReliable ? scanner.metrics.reliefLabel : "—")
         }
     }
 
