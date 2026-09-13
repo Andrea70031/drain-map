@@ -22,6 +22,7 @@ final class LiDARAcquisitionEngine: NSObject, ARSessionDelegate {
 
     private let lock = NSLock()
     private var points: [SIMD3<Float>] = []
+    private var writeIndex = 0
     private var depthSum = 0.0
     private var depthCount = 0
     private var meshAnchorIDs: Set<UUID> = []
@@ -30,7 +31,7 @@ final class LiDARAcquisitionEngine: NSObject, ARSessionDelegate {
     private var measuring = false
     private var running = false
     private var meshSupported = false
-    private let frameInterval: TimeInterval = 0.085
+    private let frameInterval: TimeInterval = 0.10
 
     init(maximumStoredPoints: Int = 50_000) {
         self.maximumStoredPoints = max(maximumStoredPoints, 40_000)
@@ -51,8 +52,11 @@ final class LiDARAcquisitionEngine: NSObject, ARSessionDelegate {
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 guard let self else { return }
-                if granted { self.startSession() }
-                else { self.publishStatus(supported: true, running: false, measuring: false, cameraDenied: true) }
+                if granted {
+                    self.startSession()
+                } else {
+                    self.publishStatus(supported: true, running: false, measuring: false, cameraDenied: true)
+                }
             }
         case .denied, .restricted:
             publishStatus(supported: true, running: false, measuring: false, cameraDenied: true)
@@ -163,6 +167,7 @@ final class LiDARAcquisitionEngine: NSObject, ARSessionDelegate {
 
     private func resetLocked() {
         points.removeAll(keepingCapacity: true)
+        writeIndex = 0
         depthSum = 0
         depthCount = 0
         meshAnchorIDs.removeAll(keepingCapacity: true)
@@ -211,18 +216,27 @@ final class LiDARAcquisitionEngine: NSObject, ARSessionDelegate {
         guard !batch.points.isEmpty else { return }
 
         lock.lock()
-        points.append(contentsOf: batch.points)
+        appendToRingBuffer(batch.points)
         depthSum += batch.depthSum
         depthCount += batch.depthCount
-        if points.count > maximumStoredPoints {
-            points.removeFirst(points.count - maximumStoredPoints)
-        }
         let currentCount = points.count
         lock.unlock()
 
         DispatchQueue.main.async { [weak self] in
             self?.onPointCountChanged?(currentCount)
             self?.onFrameProcessed?()
+        }
+    }
+
+    private func appendToRingBuffer(_ batch: [SIMD3<Float>]) {
+        for point in batch {
+            if points.count < maximumStoredPoints {
+                points.append(point)
+            } else {
+                points[writeIndex] = point
+                writeIndex += 1
+                if writeIndex >= maximumStoredPoints { writeIndex = 0 }
+            }
         }
     }
 
@@ -266,8 +280,25 @@ final class LiDARAcquisitionEngine: NSObject, ARSessionDelegate {
         let xEnd = Int(Float(width) * 0.94)
         let yStart = Int(Float(height) * 0.10)
         let yEnd = Int(Float(height) * 0.92)
-        let sampleColumns = 43
-        let sampleRows = 33
+        let sampleColumns = 39
+        let sampleRows = 29
+        let neighborStep = 2
+
+        func depthAt(_ x: Int, _ y: Int) -> Float? {
+            guard x >= 0, x < width, y >= 0, y < height else { return nil }
+            let row = depthBase.advanced(by: y * rowBytes).assumingMemoryBound(to: Float32.self)
+            let value = row[x]
+            guard value.isFinite, value > 0.22, value < 4.5 else { return nil }
+            return value
+        }
+
+        func worldPoint(x: Int, y: Int, depth: Float) -> SIMD3<Float> {
+            let cameraX = (Float(x) - cx) * depth / fx
+            let cameraY = -(Float(y) - cy) * depth / fy
+            let cameraPoint = SIMD4<Float>(cameraX, cameraY, -depth, 1)
+            let world4 = frame.camera.transform * cameraPoint
+            return SIMD3<Float>(world4.x, world4.y, world4.z)
+        }
 
         var result: [SIMD3<Float>] = []
         result.reserveCapacity(sampleColumns * sampleRows)
@@ -276,11 +307,11 @@ final class LiDARAcquisitionEngine: NSObject, ARSessionDelegate {
 
         for row in 0..<sampleRows {
             let ry = Double(row) / Double(max(sampleRows - 1, 1))
-            let y = min(height - 1, max(0, Int(round(Double(yStart) + ry * Double(yEnd - yStart)))))
+            let y = min(height - 1 - neighborStep, max(0, Int(round(Double(yStart) + ry * Double(yEnd - yStart)))))
 
             for column in 0..<sampleColumns {
                 let rx = Double(column) / Double(max(sampleColumns - 1, 1))
-                let x = min(width - 1, max(0, Int(round(Double(xStart) + rx * Double(xEnd - xStart)))))
+                let x = min(width - 1 - neighborStep, max(0, Int(round(Double(xStart) + rx * Double(xEnd - xStart)))))
 
                 if let confidenceBase {
                     let confidenceRow = confidenceBase
@@ -289,17 +320,28 @@ final class LiDARAcquisitionEngine: NSObject, ARSessionDelegate {
                     if confidenceRow[x] < 1 { continue }
                 }
 
-                let depthRow = depthBase
-                    .advanced(by: y * rowBytes)
-                    .assumingMemoryBound(to: Float32.self)
-                let z = depthRow[x]
-                guard z.isFinite, z > 0.22, z < 5.0 else { continue }
+                guard let z = depthAt(x, y),
+                      let zRight = depthAt(x + neighborStep, y),
+                      let zDown = depthAt(x, y + neighborStep) else { continue }
 
-                let cameraX = (Float(x) - cx) * z / fx
-                let cameraY = -(Float(y) - cy) * z / fy
-                let cameraPoint = SIMD4<Float>(cameraX, cameraY, -z, 1)
-                let world4 = frame.camera.transform * cameraPoint
-                result.append(SIMD3<Float>(world4.x, world4.y, world4.z))
+                let discontinuityLimit = max(Float(0.055), z * 0.045)
+                guard abs(zRight - z) <= discontinuityLimit,
+                      abs(zDown - z) <= discontinuityLimit else { continue }
+
+                let center = worldPoint(x: x, y: y, depth: z)
+                let rightPoint = worldPoint(x: x + neighborStep, y: y, depth: zRight)
+                let downPoint = worldPoint(x: x, y: y + neighborStep, depth: zDown)
+
+                let tangentX = rightPoint - center
+                let tangentY = downPoint - center
+                let normal = simd_cross(tangentX, tangentY)
+                let normalLength = simd_length(normal)
+                guard normalLength > 0.0005 else { continue }
+
+                let verticalAlignment = abs(normal.y / normalLength)
+                guard verticalAlignment >= 0.78 else { continue }
+
+                result.append(center)
                 sum += Double(z)
                 count += 1
             }
