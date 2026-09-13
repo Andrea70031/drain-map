@@ -15,6 +15,11 @@ workflows:
     scripts:
       - name: Set up code signing
         script: xcode-project use-profiles
+      - name: Set unique App Store build number
+        script: |
+          APP_BUILD_NUMBER=$((100 + ${BUILD_NUMBER:-1}))
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_BUILD_NUMBER" DrainMap/Info.plist
+          echo "Using CFBundleVersion $APP_BUILD_NUMBER"
       - name: Build IPA
         script: |
           xcode-project build-ipa \
