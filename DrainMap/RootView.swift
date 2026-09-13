@@ -708,20 +708,29 @@ final class ARSurfacePreviewContainer: UIView {
     }
 
     private func makeSurfaceGeometry(_ renderData: SurfaceRenderData) -> SCNGeometry {
-        let vertices = renderData.vertices.map { SCNVector3($0.x, $0.y, $0.z) }
+        var vertices: [SCNVector3] = []
+        vertices.reserveCapacity(renderData.vertices.count)
+        for vertex in renderData.vertices {
+            vertices.append(SCNVector3(vertex.x, vertex.y, vertex.z))
+        }
         let vertexSource = SCNGeometrySource(vertices: vertices)
 
-        let colors: [SIMD4<Float>] = renderData.normalizedHeights.map { normalized in
-            switch mode {
-            case .slopes:
-                return heatColor(normalized)
-            case .water:
-                let low = 1 - normalized
-                let alpha = Float(0.16 + low * 0.34 + rainIntensity * 0.17)
-                return SIMD4<Float>(0.02, 0.43, 1.0, min(alpha, 0.68))
-            case .camera:
-                return SIMD4<Float>(0, 0, 0, 0)
+        var colors: [SIMD4<Float>] = []
+        colors.reserveCapacity(renderData.normalizedHeights.count)
+        for normalized in renderData.normalizedHeights {
+            let color: SIMD4<Float>
+            if mode == .slopes {
+                color = heatColor(normalized)
+            } else if mode == .water {
+                let low = Float(1.0) - normalized
+                let rain = Float(rainIntensity)
+                let rawAlpha = Float(0.16) + low * Float(0.34) + rain * Float(0.17)
+                let alpha = Swift.min(rawAlpha, Float(0.68))
+                color = SIMD4<Float>(Float(0.02), Float(0.43), Float(1.0), alpha)
+            } else {
+                color = SIMD4<Float>(repeating: 0)
             }
+            colors.append(color)
         }
 
         let colorData = colors.withUnsafeBytes { Data($0) }
@@ -794,9 +803,10 @@ final class ARSurfacePreviewContainer: UIView {
     }
 
     private func heatColor(_ value: Float) -> SIMD4<Float> {
-        let t = min(max(value, 0), 1)
+        let t = Swift.min(Swift.max(value, Float(0)), Float(1))
+        let hue = CGFloat(Float(0.66) * (Float(1) - t))
         let color = UIColor(
-            hue: CGFloat(0.66 * (1 - t)),
+            hue: hue,
             saturation: 0.96,
             brightness: 1.0,
             alpha: 0.56
