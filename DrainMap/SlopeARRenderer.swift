@@ -64,7 +64,9 @@ final class SlopeARRenderer {
             size: CGSize(width: CGFloat(width), height: CGFloat(height)),
             format: format
         ).image { context in
-            context.cgContext.clear(CGRect(x: 0, y: 0, width: width, height: height))
+            context.cgContext.clear(
+                CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height))
+            )
             context.cgContext.interpolationQuality = .high
 
             for row in 0..<surface.rows {
