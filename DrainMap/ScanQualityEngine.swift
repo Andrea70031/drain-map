@@ -28,7 +28,7 @@ struct ScanQualityEngine {
         default: residualScore = 0.22
         }
 
-        let score = min(max(
+        let rawScore = min(max(
             pointScore * 0.24 +
             coverageScore * 0.36 +
             connectedScore * 0.22 +
@@ -39,6 +39,20 @@ struct ScanQualityEngine {
         let enoughPoints = pointCount >= minimumPoints
         let enoughCoverage = coverage >= minimumCoverage
         let geometryStable = residualMADMillimeters <= 25 && connectedCoverage >= 0.45
+
+        var score = rawScore
+        if !enoughPoints {
+            score = min(score, 0.49)
+        }
+        if coverage < minimumCoverage * 0.50 {
+            score = min(score, 0.49)
+        } else if !enoughCoverage {
+            score = min(score, 0.59)
+        }
+        if !geometryStable {
+            score = min(score, 0.49)
+        }
+
         let isSufficient = enoughPoints && enoughCoverage && geometryStable && score >= 0.60
 
         let warning: String?
