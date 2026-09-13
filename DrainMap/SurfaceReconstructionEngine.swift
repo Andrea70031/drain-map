@@ -21,9 +21,9 @@ struct SurfaceReconstructionEngine {
     let columns: Int
     let rows: Int
 
-    init(columns: Int = 37, rows: Int = 29) {
-        self.columns = max(columns, 12)
-        self.rows = max(rows, 10)
+    init(columns: Int = 33, rows: Int = 25) {
+        self.columns = max(columns, 16)
+        self.rows = max(rows, 12)
     }
 
     func reconstruct(
@@ -33,10 +33,11 @@ struct SurfaceReconstructionEngine {
         meshAnchorCount: Int,
         pointLimit: Int
     ) -> SurfaceGeometrySnapshot? {
-        guard allPoints.count >= 180 else { return nil }
+        guard allPoints.count >= 220 else { return nil }
 
-        let points = downsample(allPoints, limit: max(pointLimit, 500))
-        guard let band = dominantHorizontalBand(points), band.count >= 150 else { return nil }
+        let points = downsample(allPoints, limit: max(pointLimit, 800))
+        let cameraY = cameraTransform.columns.3.y
+        guard let band = dominantHorizontalBand(points, cameraY: cameraY), band.count >= 180 else { return nil }
 
         var right = SIMD3<Float>(cameraTransform.columns.0.x, 0, cameraTransform.columns.0.z)
         var forward = SIMD3<Float>(-cameraTransform.columns.2.x, 0, -cameraTransform.columns.2.z)
@@ -59,27 +60,30 @@ struct SurfaceReconstructionEngine {
         let residuals = local.map { Double($0.world.y - firstPlane.height(u: $0.u, v: $0.v)) }
         let residualMedian = median(residuals)
         let residualMAD = median(residuals.map { abs($0 - residualMedian) })
-        let residualLimit = Float(min(0.075, max(0.012, residualMAD * 4.5 + 0.007)))
+        let residualLimit = Float(min(0.050, max(0.010, residualMAD * 4.0 + 0.006)))
 
         local = local.filter {
             abs(Double($0.world.y - firstPlane.height(u: $0.u, v: $0.v)) - residualMedian) <= Double(residualLimit)
         }
-        guard local.count >= 140, let plane = fitPlane(local) else { return nil }
+        guard local.count >= 170, let plane = fitPlane(local) else { return nil }
+
+        let gradient = sqrt(Double(plane.a * plane.a + plane.b * plane.b))
+        guard gradient.isFinite, gradient <= 0.30 else { return nil }
 
         let uValues = local.map { Double($0.u) }
         let vValues = local.map { Double($0.v) }
-        var uMin = Float(quantile(uValues, 0.015))
-        var uMax = Float(quantile(uValues, 0.985))
-        var vMin = Float(quantile(vValues, 0.015))
-        var vMax = Float(quantile(vValues, 0.985))
+        var uMin = Float(quantile(uValues, 0.02))
+        var uMax = Float(quantile(uValues, 0.98))
+        var vMin = Float(quantile(vValues, 0.02))
+        var vMax = Float(quantile(vValues, 0.98))
 
         guard uMax > uMin, vMax > vMin else { return nil }
-        enforceMinimumSpan(minimum: 0.35, minValue: &uMin, maxValue: &uMax)
-        enforceMinimumSpan(minimum: 0.35, minValue: &vMin, maxValue: &vMax)
+        enforceMinimumSpan(minimum: 0.30, minValue: &uMin, maxValue: &uMax)
+        enforceMinimumSpan(minimum: 0.30, minValue: &vMin, maxValue: &vMax)
 
-        let count = columns * rows
-        var sums = Array(repeating: 0.0, count: count)
-        var counts = Array(repeating: 0, count: count)
+        let cellCount = columns * rows
+        var sums = Array(repeating: 0.0, count: cellCount)
+        var counts = Array(repeating: 0, count: cellCount)
 
         for point in local {
             guard point.u >= uMin, point.u <= uMax, point.v >= vMin, point.v <= vMax else { continue }
@@ -92,45 +96,53 @@ struct SurfaceReconstructionEngine {
             counts[index] += 1
         }
 
-        let observedCells = counts.filter { $0 > 0 }.count
-        let component = largestConnectedComponent(counts: counts)
-        guard component.count >= max(40, count / 18) else { return nil }
+        let observedMask = counts.map { $0 > 0 }
+        let observedCells = observedMask.filter { $0 }.count
+        guard observedCells >= 35 else { return nil }
 
-        var heights = Array<Double?>(repeating: nil, count: count)
-        for index in component where counts[index] > 0 {
+        let bridgedMask = dilate(mask: observedMask, radius: 1)
+        let component = largestConnectedComponent(mask: bridgedMask)
+        guard component.count >= max(55, cellCount / 15) else { return nil }
+
+        let componentObserved = counts.indices.filter { counts[$0] > 0 && component.contains($0) }
+        guard componentObserved.count >= 30 else { return nil }
+
+        var heights = Array<Double?>(repeating: nil, count: cellCount)
+        for index in componentObserved {
             heights[index] = sums[index] / Double(counts[index])
         }
 
-        let observedComponentCount = component.count
-        fillShortGaps(&heights, maxGap: 3)
-        interpolateHoles(&heights, passes: 5)
-        smooth(&heights, passes: 2)
+        fillShortGaps(&heights, region: component, maxGap: 3)
+        interpolateHoles(&heights, region: component, passes: 7)
+        edgePreservingSmooth(&heights, region: component, passes: 2)
 
         let validHeights = heights.compactMap { $0 }
-        guard validHeights.count >= 50 else { return nil }
+        guard validHeights.count >= 65 else { return nil }
 
-        let robustMin = quantile(validHeights, 0.015)
-        let robustMax = quantile(validHeights, 0.985)
-        let meanHeight = validHeights.reduce(0, +) / Double(validHeights.count)
+        let robustMin = quantile(validHeights, 0.02)
+        let robustMax = quantile(validHeights, 0.98)
+        let referenceHeight = quantile(validHeights, 0.50)
         let span = max(robustMax - robustMin, 0.002)
 
-        var normalized = Array(repeating: Float(0.5), count: count)
-        var absolute = Array(repeating: Double.nan, count: count)
-        var validMask = Array(repeating: false, count: count)
-        var vertices = Array(repeating: SIMD3<Float>(repeating: 0), count: count)
+        var normalized = Array(repeating: Float(0.5), count: cellCount)
+        var absolute = Array(repeating: Double.nan, count: cellCount)
+        var validMask = Array(repeating: false, count: cellCount)
+        var vertices = Array(repeating: SIMD3<Float>(repeating: 0), count: cellCount)
 
         for row in 0..<rows {
             let v = vMin + Float(row) / Float(max(rows - 1, 1)) * (vMax - vMin)
             for column in 0..<columns {
                 let index = row * columns + column
-                guard let measured = heights[index] else { continue }
+                guard component.contains(index), let measured = heights[index] else { continue }
                 let u = uMin + Float(column) / Float(max(columns - 1, 1)) * (uMax - uMin)
-                let clamped = min(max(measured, robustMin), robustMax)
-                normalized[index] = Float((clamped - robustMin) / span)
+                let colorHeight = min(max(measured, robustMin), robustMax)
+                normalized[index] = Float((colorHeight - robustMin) / span)
                 absolute[index] = measured
                 validMask[index] = true
+
+                let renderHeight = min(max(measured, robustMin - 0.015), robustMax + 0.015)
                 var position = origin + right * u + forward * v
-                position.y = Float(measured) + 0.0035
+                position.y = Float(renderHeight) + 0.0035
                 vertices[index] = position
             }
         }
@@ -139,36 +151,42 @@ struct SurfaceReconstructionEngine {
         let dv = Double(vMax - vMin) / Double(max(rows - 1, 1))
         let localSlope = makeLocalSlopeGrid(heights: heights, du: du, dv: dv)
 
-        var depressionGrid = Array(repeating: -1.0, count: count)
-        var maxDepression = 0.0
+        var depressionGrid = Array(repeating: -1.0, count: cellCount)
+        var depressionSamples: [Double] = []
+        depressionSamples.reserveCapacity(validHeights.count)
         for row in 0..<rows {
             let v = vMin + Float(row) / Float(max(rows - 1, 1)) * (vMax - vMin)
             for column in 0..<columns {
                 let index = row * columns + column
-                guard let measured = heights[index] else { continue }
+                guard validMask[index], let measured = heights[index] else { continue }
                 let u = uMin + Float(column) / Float(max(columns - 1, 1)) * (uMax - uMin)
                 let expected = Double(plane.height(u: u, v: v))
                 let depression = max(0, (expected - measured) * 1000)
                 depressionGrid[index] = depression
-                maxDepression = max(maxDepression, depression)
+                depressionSamples.append(depression)
             }
         }
+        let maxDepression = depressionSamples.isEmpty ? 0 : quantile(depressionSamples, 0.98)
 
-        let triangles = makeTriangleIndices(validMask: validMask)
-        guard triangles.count >= 6 else { return nil }
+        let maxCellRise = max(0.035, min(0.10, max(du, dv) * 0.45))
+        let triangles = makeTriangleIndices(validMask: validMask, heights: heights, maxRise: maxCellRise)
+        guard triangles.count >= 12 else { return nil }
 
-        let validIndices = validMask.indices.filter { validMask[$0] }
+        let validIndices = validMask.indices.filter { validMask[$0] && absolute[$0].isFinite }
         guard let lowIndex = validIndices.min(by: { absolute[$0] < absolute[$1] }) else { return nil }
         let lowColumn = lowIndex % columns
         let lowRow = lowIndex / columns
 
-        let gradient = sqrt(Double(plane.a * plane.a + plane.b * plane.b))
         let downhillAngle = atan2(Double(-plane.a), Double(-plane.b))
-        let coverage = Double(observedComponentCount) / Double(count)
-        let connectedRatio = observedCells > 0 ? Double(observedComponentCount) / Double(observedCells) : 0
+        let geometricCoverage = Double(component.count) / Double(cellCount)
+        let filledCoverage = Double(validIndices.count) / Double(cellCount)
+        let connectedRatio = observedCells > 0 ? Double(componentObserved.count) / Double(observedCells) : 0
+        let coverage = min(1, max(0, geometricCoverage * 0.72 + filledCoverage * 0.28))
 
-        var gridForMetrics = Array(repeating: -1.0, count: count)
-        for index in validIndices { gridForMetrics[index] = Double(normalized[index]) }
+        var gridForMetrics = Array(repeating: -1.0, count: cellCount)
+        for index in validIndices {
+            gridForMetrics[index] = Double(normalized[index])
+        }
 
         var metrics = ScanMetrics()
         metrics.slopePercent = gradient * 100
@@ -187,8 +205,8 @@ struct SurfaceReconstructionEngine {
         metrics.flowPath = makeFlowPath(absoluteHeights: absolute, validMask: validMask)
         metrics.coverage = coverage
         metrics.meshAnchorCount = meshAnchorCount
-        metrics.minimumHeightMillimeters = (robustMin - meanHeight) * 1000
-        metrics.maximumHeightMillimeters = (robustMax - meanHeight) * 1000
+        metrics.minimumHeightMillimeters = (robustMin - referenceHeight) * 1000
+        metrics.maximumHeightMillimeters = (robustMax - referenceHeight) * 1000
         metrics.localSlopeGrid = localSlope
         metrics.depressionGrid = depressionGrid
 
@@ -223,55 +241,82 @@ struct SurfaceReconstructionEngine {
         }.prefix(limit))
     }
 
-    private func dominantHorizontalBand(_ points: [SIMD3<Float>]) -> [SIMD3<Float>]? {
+    private func dominantHorizontalBand(_ points: [SIMD3<Float>], cameraY: Float) -> [SIMD3<Float>]? {
         guard !points.isEmpty else { return nil }
-        let binSize: Float = 0.04
+        let binSize: Float = 0.035
         var histogram: [Int: Int] = [:]
         for point in points {
             histogram[Int(floor(point.y / binSize)), default: 0] += 1
         }
-        guard let mode = histogram.max(by: { $0.value < $1.value })?.key else { return nil }
-        let center = (Float(mode) + 0.5) * binSize
-        var selected = points.filter { abs($0.y - center) <= 0.16 }
-        if selected.count < 150 {
+        guard !histogram.isEmpty else { return nil }
+
+        func smoothedCount(for key: Int) -> Int {
+            (key - 1...key + 1).reduce(0) { $0 + (histogram[$1] ?? 0) }
+        }
+
+        let keys = Array(histogram.keys)
+        let strongest = keys.max(by: { smoothedCount(for: $0) < smoothedCount(for: $1) })
+        guard let strongest else { return nil }
+        let strongestCount = max(smoothedCount(for: strongest), 1)
+
+        let lowerCandidates = keys.filter { key in
+            let center = (Float(key) + 0.5) * binSize
+            let drop = cameraY - center
+            return drop >= 0.12 && drop <= 2.6 && Double(smoothedCount(for: key)) >= Double(strongestCount) * 0.30
+        }
+
+        let chosenKey: Int
+        if let lowestStrong = lowerCandidates.min(by: {
+            (Float($0) + 0.5) * binSize < (Float($1) + 0.5) * binSize
+        }) {
+            chosenKey = lowestStrong
+        } else {
+            chosenKey = strongest
+        }
+
+        let center = (Float(chosenKey) + 0.5) * binSize
+        var selected = points.filter { abs($0.y - center) <= 0.20 }
+
+        if selected.count < 180 {
             let medianY = Float(median(points.map { Double($0.y) }))
-            selected = points.filter { abs($0.y - medianY) <= 0.24 }
+            selected = points.filter { abs($0.y - medianY) <= 0.22 }
         }
         return selected
     }
 
     private func fitPlane(_ points: [LocalPoint]) -> Plane? {
         guard points.count >= 3 else { return nil }
+
+        let count = Float(points.count)
+        let meanU = points.reduce(Float(0)) { $0 + $1.u } / count
+        let meanV = points.reduce(Float(0)) { $0 + $1.v } / count
+        let meanY = points.reduce(Float(0)) { $0 + $1.world.y } / count
+
         var suu: Float = 0
-        var suv: Float = 0
-        var su: Float = 0
         var svv: Float = 0
-        var sv: Float = 0
+        var suv: Float = 0
         var suy: Float = 0
         var svy: Float = 0
-        var sy: Float = 0
 
         for point in points {
-            suu += point.u * point.u
-            suv += point.u * point.v
-            su += point.u
-            svv += point.v * point.v
-            sv += point.v
-            suy += point.u * point.world.y
-            svy += point.v * point.world.y
-            sy += point.world.y
+            let du = point.u - meanU
+            let dv = point.v - meanV
+            let dy = point.world.y - meanY
+            suu += du * du
+            svv += dv * dv
+            suv += du * dv
+            suy += du * dy
+            svy += dv * dy
         }
 
-        let matrix = simd_float3x3(
-            SIMD3<Float>(suu, suv, su),
-            SIMD3<Float>(suv, svv, sv),
-            SIMD3<Float>(su, sv, Float(points.count))
-        )
-        let determinant = simd_determinant(matrix)
+        let determinant = suu * svv - suv * suv
         guard determinant.isFinite, abs(determinant) > 0.0000001 else { return nil }
-        let solution = simd_inverse(matrix) * SIMD3<Float>(suy, svy, sy)
-        guard solution.x.isFinite, solution.y.isFinite, solution.z.isFinite else { return nil }
-        return Plane(a: solution.x, b: solution.y, c: solution.z)
+
+        let a = (suy * svv - svy * suv) / determinant
+        let b = (svy * suu - suy * suv) / determinant
+        let c = meanY - a * meanU - b * meanV
+        guard a.isFinite, b.isFinite, c.isFinite else { return nil }
+        return Plane(a: a, b: b, c: c)
     }
 
     private func enforceMinimumSpan(minimum: Float, minValue: inout Float, maxValue: inout Float) {
@@ -281,11 +326,29 @@ struct SurfaceReconstructionEngine {
         maxValue = center + minimum / 2
     }
 
-    private func largestConnectedComponent(counts: [Int]) -> Set<Int> {
+    private func dilate(mask: [Bool], radius: Int) -> [Bool] {
+        guard radius > 0 else { return mask }
+        var result = mask
+        for index in mask.indices where mask[index] {
+            let row = index / columns
+            let column = index % columns
+            for dr in -radius...radius {
+                for dc in -radius...radius {
+                    let nr = row + dr
+                    let nc = column + dc
+                    guard nr >= 0, nr < rows, nc >= 0, nc < columns else { continue }
+                    result[nr * columns + nc] = true
+                }
+            }
+        }
+        return result
+    }
+
+    private func largestConnectedComponent(mask: [Bool]) -> Set<Int> {
         var visited = Set<Int>()
         var best = Set<Int>()
 
-        for start in counts.indices where counts[start] > 0 && !visited.contains(start) {
+        for start in mask.indices where mask[start] && !visited.contains(start) {
             var queue = [start]
             var head = 0
             var component = Set<Int>()
@@ -297,13 +360,17 @@ struct SurfaceReconstructionEngine {
                 component.insert(current)
                 let row = current / columns
                 let column = current % columns
-                let neighbors = [(column - 1, row), (column + 1, row), (column, row - 1), (column, row + 1)]
-                for (nc, nr) in neighbors {
-                    guard nc >= 0, nc < columns, nr >= 0, nr < rows else { continue }
-                    let next = nr * columns + nc
-                    guard counts[next] > 0, !visited.contains(next) else { continue }
-                    visited.insert(next)
-                    queue.append(next)
+
+                for dr in -1...1 {
+                    for dc in -1...1 where !(dr == 0 && dc == 0) {
+                        let nr = row + dr
+                        let nc = column + dc
+                        guard nr >= 0, nr < rows, nc >= 0, nc < columns else { continue }
+                        let next = nr * columns + nc
+                        guard mask[next], !visited.contains(next) else { continue }
+                        visited.insert(next)
+                        queue.append(next)
+                    }
                 }
             }
             if component.count > best.count { best = component }
@@ -311,32 +378,38 @@ struct SurfaceReconstructionEngine {
         return best
     }
 
-    private func fillShortGaps(_ heights: inout [Double?], maxGap: Int) {
+    private func fillShortGaps(_ heights: inout [Double?], region: Set<Int>, maxGap: Int) {
         guard columns > 2, rows > 2 else { return }
+
         for row in 0..<rows {
             for column in 1..<(columns - 1) {
                 let index = row * columns + column
-                guard heights[index] == nil else { continue }
+                guard region.contains(index), heights[index] == nil else { continue }
                 for gap in 1...maxGap {
                     let left = column - gap
                     let right = column + gap
                     guard left >= 0, right < columns else { continue }
-                    if let a = heights[row * columns + left], let b = heights[row * columns + right] {
+                    let li = row * columns + left
+                    let ri = row * columns + right
+                    if let a = heights[li], let b = heights[ri] {
                         heights[index] = (a + b) / 2
                         break
                     }
                 }
             }
         }
+
         for column in 0..<columns {
             for row in 1..<(rows - 1) {
                 let index = row * columns + column
-                guard heights[index] == nil else { continue }
+                guard region.contains(index), heights[index] == nil else { continue }
                 for gap in 1...maxGap {
                     let top = row - gap
                     let bottom = row + gap
                     guard top >= 0, bottom < rows else { continue }
-                    if let a = heights[top * columns + column], let b = heights[bottom * columns + column] {
+                    let ti = top * columns + column
+                    let bi = bottom * columns + column
+                    if let a = heights[ti], let b = heights[bi] {
                         heights[index] = (a + b) / 2
                         break
                     }
@@ -345,14 +418,16 @@ struct SurfaceReconstructionEngine {
         }
     }
 
-    private func interpolateHoles(_ heights: inout [Double?], passes: Int) {
+    private func interpolateHoles(_ heights: inout [Double?], region: Set<Int>, passes: Int) {
         for _ in 0..<passes {
             let source = heights
             var changed = false
+
             for row in 0..<rows {
                 for column in 0..<columns {
                     let index = row * columns + column
-                    guard source[index] == nil else { continue }
+                    guard region.contains(index), source[index] == nil else { continue }
+
                     var neighbors: [Double] = []
                     for dr in -1...1 {
                         for dc in -1...1 where !(dr == 0 && dc == 0) {
@@ -362,8 +437,9 @@ struct SurfaceReconstructionEngine {
                             if let value = source[nr * columns + nc] { neighbors.append(value) }
                         }
                     }
-                    if neighbors.count >= 5 {
-                        heights[index] = neighbors.reduce(0, +) / Double(neighbors.count)
+
+                    if neighbors.count >= 3 {
+                        heights[index] = median(neighbors)
                         changed = true
                     }
                 }
@@ -372,26 +448,29 @@ struct SurfaceReconstructionEngine {
         }
     }
 
-    private func smooth(_ heights: inout [Double?], passes: Int) {
+    private func edgePreservingSmooth(_ heights: inout [Double?], region: Set<Int>, passes: Int) {
         for _ in 0..<passes {
             let source = heights
             for row in 0..<rows {
                 for column in 0..<columns {
                     let index = row * columns + column
-                    guard let center = source[index] else { continue }
-                    var weighted = center * 4
-                    var weight = 4.0
+                    guard region.contains(index), let center = source[index] else { continue }
+
+                    var neighbors: [Double] = []
                     for dr in -1...1 {
                         for dc in -1...1 where !(dr == 0 && dc == 0) {
                             let nr = row + dr
                             let nc = column + dc
-                            guard nr >= 0, nr < rows, nc >= 0, nc < columns,
-                                  let value = source[nr * columns + nc] else { continue }
-                            weighted += value
-                            weight += 1
+                            guard nr >= 0, nr < rows, nc >= 0, nc < columns else { continue }
+                            if let value = source[nr * columns + nc] { neighbors.append(value) }
                         }
                     }
-                    heights[index] = weighted / weight
+                    guard neighbors.count >= 3 else { continue }
+
+                    let localMedian = median(neighbors)
+                    let delta = abs(center - localMedian)
+                    let preserve = delta >= 0.018 ? 0.82 : 0.62
+                    heights[index] = center * preserve + localMedian * (1 - preserve)
                 }
             }
         }
@@ -400,14 +479,17 @@ struct SurfaceReconstructionEngine {
     private func makeLocalSlopeGrid(heights: [Double?], du: Double, dv: Double) -> [Double] {
         var result = Array(repeating: -1.0, count: heights.count)
         guard du > 0.0001, dv > 0.0001 else { return result }
+
         for row in 0..<rows {
             for column in 0..<columns {
                 let index = row * columns + column
                 guard heights[index] != nil else { continue }
+
                 let left = column > 0 ? heights[row * columns + column - 1] : nil
                 let right = column + 1 < columns ? heights[row * columns + column + 1] : nil
                 let top = row > 0 ? heights[(row - 1) * columns + column] : nil
                 let bottom = row + 1 < rows ? heights[(row + 1) * columns + column] : nil
+
                 var dx = 0.0
                 var dy = 0.0
                 var hasAxis = false
@@ -425,19 +507,29 @@ struct SurfaceReconstructionEngine {
         return result
     }
 
-    private func makeTriangleIndices(validMask: [Bool]) -> [UInt32] {
+    private func makeTriangleIndices(validMask: [Bool], heights: [Double?], maxRise: Double) -> [UInt32] {
         var indices: [UInt32] = []
         indices.reserveCapacity((columns - 1) * (rows - 1) * 6)
+
+        func stable(_ a: Int, _ b: Int, _ c: Int) -> Bool {
+            guard validMask[a], validMask[b], validMask[c],
+                  let ha = heights[a], let hb = heights[b], let hc = heights[c] else { return false }
+            let high = max(ha, max(hb, hc))
+            let low = min(ha, min(hb, hc))
+            return high - low <= maxRise
+        }
+
         for row in 0..<(rows - 1) {
             for column in 0..<(columns - 1) {
                 let a = row * columns + column
                 let b = a + 1
                 let c = a + columns
                 let d = c + 1
-                if validMask[a], validMask[b], validMask[c] {
+
+                if stable(a, b, c) {
                     indices.append(contentsOf: [UInt32(a), UInt32(c), UInt32(b)])
                 }
-                if validMask[b], validMask[c], validMask[d] {
+                if stable(b, c, d) {
                     indices.append(contentsOf: [UInt32(b), UInt32(c), UInt32(d)])
                 }
             }
@@ -448,6 +540,7 @@ struct SurfaceReconstructionEngine {
     private func makeFlowPath(absoluteHeights: [Double], validMask: [Bool]) -> [SurfacePoint] {
         let valid = validMask.indices.filter { validMask[$0] && absoluteHeights[$0].isFinite }
         guard let start = valid.max(by: { absoluteHeights[$0] < absoluteHeights[$1] }) else { return [] }
+
         var current = start
         var visited = Set<Int>()
         var path: [SurfacePoint] = []
