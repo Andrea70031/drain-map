@@ -8,6 +8,17 @@ import SwiftUI
 import UIKit
 import simd
 
+struct LiveFlowVector: Equatable {
+    let start: CGPoint
+    let end: CGPoint
+    let intensity: Double
+}
+
+struct LiveFlowPool: Equatable {
+    let center: CGPoint
+    let strength: Double
+}
+
 final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
     let session = ARSession()
 
@@ -17,6 +28,12 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
     @Published private(set) var isMeasuring = false
     @Published private(set) var cameraDenied = false
     @Published private(set) var supportsMeshReconstruction = false
+    @Published private(set) var acquiredPointCount = 0
+    @Published private(set) var liveFlowVectors: [LiveFlowVector] = []
+    @Published private(set) var liveFlowPools: [LiveFlowPool] = []
+
+    let minimumRequiredPoints = 15_000
+    let minimumRequiredCoverage = 0.60
 
     private let stateLock = NSLock()
     private var lastProcessedTimestamp: TimeInterval = 0
@@ -26,9 +43,12 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
     private var meshAnchorIDs: Set<UUID> = []
     private var lastCameraTransform = matrix_identity_float4x4
 
-    private let requestedColumns = 21
-    private let requestedRows = 15
-    private let maximumAccumulatedPoints = 18_000
+    private let requestedColumns = 25
+    private let requestedRows = 19
+    private let maximumAccumulatedPoints = 36_000
+    private let liveAnalysisPointLimit = 8_000
+    private let finalAnalysisPointLimit = 20_000
+    private let frameInterval: TimeInterval = 0.12
 
     override init() {
         super.init()
@@ -101,6 +121,9 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
             self.isMeasuring = false
             self.supportsMeshReconstruction = meshSupported
             self.metrics = ScanMetrics()
+            self.acquiredPointCount = 0
+            self.liveFlowVectors = []
+            self.liveFlowPools = []
         }
     }
 
@@ -109,6 +132,9 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         resetAcquisition()
         DispatchQueue.main.async {
             self.metrics = ScanMetrics()
+            self.acquiredPointCount = 0
+            self.liveFlowVectors = []
+            self.liveFlowPools = []
             self.isMeasuring = true
         }
     }
@@ -116,13 +142,18 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
     @discardableResult
     func finishMeasurement() -> ScanMetrics? {
         let snapshot = acquisitionSnapshot()
-        let final = analyze(points: snapshot.points,
-                            averageDepth: snapshot.averageDepth,
-                            meshCount: snapshot.meshCount,
-                            cameraTransform: snapshot.cameraTransform)
+        let final = analyze(
+            points: snapshot.points,
+            averageDepth: snapshot.averageDepth,
+            meshCount: snapshot.meshCount,
+            cameraTransform: snapshot.cameraTransform,
+            pointLimit: finalAnalysisPointLimit
+        )
 
         DispatchQueue.main.async {
             self.isMeasuring = false
+            self.liveFlowVectors = []
+            self.liveFlowPools = []
             if let final { self.metrics = final }
         }
         return final ?? (metrics.hasMeasurement ? metrics : nil)
@@ -132,6 +163,9 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         resetAcquisition()
         DispatchQueue.main.async {
             self.metrics = ScanMetrics()
+            self.acquiredPointCount = 0
+            self.liveFlowVectors = []
+            self.liveFlowPools = []
             self.isMeasuring = false
         }
     }
@@ -141,6 +175,8 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         DispatchQueue.main.async {
             self.isRunning = false
             self.isMeasuring = false
+            self.liveFlowVectors = []
+            self.liveFlowPools = []
         }
     }
 
@@ -173,34 +209,45 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         lastCameraTransform = frame.camera.transform
         let shouldMeasure = isMeasuring
         let elapsed = frame.timestamp - lastProcessedTimestamp
-        if shouldMeasure && elapsed > 0.14 {
+        if shouldMeasure && elapsed > frameInterval {
             lastProcessedTimestamp = frame.timestamp
         }
         stateLock.unlock()
 
-        guard shouldMeasure, elapsed > 0.14 else { return }
+        guard shouldMeasure, elapsed > frameInterval else { return }
         guard let depthData = frame.smoothedSceneDepth ?? frame.sceneDepth else { return }
 
-        let batch = extractPoints(depthData: depthData, frame: frame)
-        guard !batch.points.isEmpty else { return }
+        let frameData = extractFrameData(depthData: depthData, frame: frame)
+        guard !frameData.points.isEmpty else { return }
 
         stateLock.lock()
-        accumulatedPoints.append(contentsOf: batch.points)
-        accumulatedDepth += batch.depthSum
-        accumulatedDepthCount += batch.depthCount
+        accumulatedPoints.append(contentsOf: frameData.points)
+        accumulatedDepth += frameData.depthSum
+        accumulatedDepthCount += frameData.depthCount
         if accumulatedPoints.count > maximumAccumulatedPoints {
             accumulatedPoints.removeFirst(accumulatedPoints.count - maximumAccumulatedPoints)
         }
         let points = accumulatedPoints
+        let pointCount = accumulatedPoints.count
         let averageDepth = accumulatedDepthCount > 0 ? accumulatedDepth / Double(accumulatedDepthCount) : 0
         let meshCount = meshAnchorIDs.count
         let cameraTransform = lastCameraTransform
         stateLock.unlock()
 
-        guard let live = analyze(points: points,
-                                 averageDepth: averageDepth,
-                                 meshCount: meshCount,
-                                 cameraTransform: cameraTransform) else { return }
+        DispatchQueue.main.async {
+            guard self.isMeasuring else { return }
+            self.acquiredPointCount = pointCount
+            self.liveFlowVectors = frameData.flowVectors
+            self.liveFlowPools = frameData.flowPools
+        }
+
+        guard let live = analyze(
+            points: points,
+            averageDepth: averageDepth,
+            meshCount: meshCount,
+            cameraTransform: cameraTransform,
+            pointLimit: liveAnalysisPointLimit
+        ) else { return }
 
         DispatchQueue.main.async {
             guard self.isMeasuring else { return }
@@ -226,13 +273,20 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         return (accumulatedPoints, averageDepth, meshAnchorIDs.count, lastCameraTransform)
     }
 
-    private struct PointBatch {
+    private struct FrameSample {
+        let world: SIMD3<Float>
+        let normalizedImagePoint: CGPoint
+    }
+
+    private struct FrameData {
         var points: [SIMD3<Float>]
         var depthSum: Double
         var depthCount: Int
+        var flowVectors: [LiveFlowVector]
+        var flowPools: [LiveFlowPool]
     }
 
-    private func extractPoints(depthData: ARDepthData, frame: ARFrame) -> PointBatch {
+    private func extractFrameData(depthData: ARDepthData, frame: ARFrame) -> FrameData {
         let depthMap = depthData.depthMap
         let confidenceMap = depthData.confidenceMap
 
@@ -244,7 +298,7 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         }
 
         guard let depthBase = CVPixelBufferGetBaseAddress(depthMap) else {
-            return PointBatch(points: [], depthSum: 0, depthCount: 0)
+            return FrameData(points: [], depthSum: 0, depthCount: 0, flowVectors: [], flowPools: [])
         }
 
         let width = CVPixelBufferGetWidth(depthMap)
@@ -268,16 +322,22 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         let yEnd = Int(Float(height) * 0.84)
         let sampleColumns = 33
         let sampleRows = 25
-        let xStep = max(1, (xEnd - xStart) / max(sampleColumns - 1, 1))
-        let yStep = max(1, (yEnd - yStart) / max(sampleRows - 1, 1))
+        let gridCount = sampleColumns * sampleRows
 
+        var samples = Array<FrameSample?>(repeating: nil, count: gridCount)
         var points: [SIMD3<Float>] = []
-        points.reserveCapacity(sampleColumns * sampleRows)
+        points.reserveCapacity(gridCount)
         var depthSum = 0.0
         var depthCount = 0
 
-        for y in stride(from: yStart, through: yEnd, by: yStep) {
-            for x in stride(from: xStart, through: xEnd, by: xStep) {
+        for row in 0..<sampleRows {
+            let fyIndex = Double(row) / Double(max(sampleRows - 1, 1))
+            let y = min(height - 1, max(0, Int(round(Double(yStart) + fyIndex * Double(yEnd - yStart)))))
+
+            for column in 0..<sampleColumns {
+                let fxIndex = Double(column) / Double(max(sampleColumns - 1, 1))
+                let x = min(width - 1, max(0, Int(round(Double(xStart) + fxIndex * Double(xEnd - xStart)))))
+
                 if let confidenceBase {
                     let confidenceRow = confidenceBase
                         .advanced(by: y * confidenceRowBytes)
@@ -295,13 +355,125 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
                 let cameraY = -(Float(y) - cy) * z / fy
                 let cameraPoint = SIMD4<Float>(cameraX, cameraY, -z, 1)
                 let worldPoint4 = frame.camera.transform * cameraPoint
-                points.append(SIMD3<Float>(worldPoint4.x, worldPoint4.y, worldPoint4.z))
+                let world = SIMD3<Float>(worldPoint4.x, worldPoint4.y, worldPoint4.z)
+                let normalized = CGPoint(
+                    x: CGFloat(x) / CGFloat(max(width - 1, 1)),
+                    y: CGFloat(y) / CGFloat(max(height - 1, 1))
+                )
+
+                samples[row * sampleColumns + column] = FrameSample(world: world, normalizedImagePoint: normalized)
+                points.append(world)
                 depthSum += Double(z)
                 depthCount += 1
             }
         }
 
-        return PointBatch(points: points, depthSum: depthSum, depthCount: depthCount)
+        let liveFlow = makeLiveFlow(samples: samples, columns: sampleColumns, rows: sampleRows)
+        return FrameData(
+            points: points,
+            depthSum: depthSum,
+            depthCount: depthCount,
+            flowVectors: liveFlow.vectors,
+            flowPools: liveFlow.pools
+        )
+    }
+
+    private func makeLiveFlow(samples: [FrameSample?], columns: Int, rows: Int) -> (vectors: [LiveFlowVector], pools: [LiveFlowPool]) {
+        guard samples.count == columns * rows else { return ([], []) }
+
+        var smoothedY = Array<Double?>(repeating: nil, count: samples.count)
+        for row in 0..<rows {
+            for column in 0..<columns {
+                let index = row * columns + column
+                guard let sample = samples[index] else { continue }
+                var sum = Double(sample.world.y) * 2.0
+                var weight = 2.0
+                for dr in -1...1 {
+                    for dc in -1...1 where !(dc == 0 && dr == 0) {
+                        let nr = row + dr
+                        let nc = column + dc
+                        guard nr >= 0, nr < rows, nc >= 0, nc < columns,
+                              let neighbor = samples[nr * columns + nc] else { continue }
+                        sum += Double(neighbor.world.y)
+                        weight += 1
+                    }
+                }
+                smoothedY[index] = sum / weight
+            }
+        }
+
+        var vectors: [LiveFlowVector] = []
+        var pools: [LiveFlowPool] = []
+        vectors.reserveCapacity(140)
+
+        for row in stride(from: 1, to: rows - 1, by: 2) {
+            for column in stride(from: 1, to: columns - 1, by: 2) {
+                let index = row * columns + column
+                guard let current = samples[index], let currentY = smoothedY[index] else { continue }
+
+                var bestIndex: Int?
+                var bestY = currentY
+                var neighborYs: [Double] = []
+
+                for dr in -1...1 {
+                    for dc in -1...1 where !(dc == 0 && dr == 0) {
+                        let nr = row + dr
+                        let nc = column + dc
+                        guard nr >= 0, nr < rows, nc >= 0, nc < columns else { continue }
+                        let candidate = nr * columns + nc
+                        guard let value = smoothedY[candidate], samples[candidate] != nil else { continue }
+                        neighborYs.append(value)
+                        if value < bestY {
+                            bestY = value
+                            bestIndex = candidate
+                        }
+                    }
+                }
+
+                if let bestIndex, let best = samples[bestIndex] {
+                    let drop = currentY - bestY
+                    let dx = Double(current.world.x - best.world.x)
+                    let dz = Double(current.world.z - best.world.z)
+                    let horizontalDistance = max(sqrt(dx * dx + dz * dz), 0.005)
+                    let slopePercent = drop / horizontalDistance * 100.0
+
+                    if slopePercent >= 0.18 {
+                        let intensity = min(max(slopePercent / 6.0, 0.04), 1.0)
+                        let start = current.normalizedImagePoint
+                        let rawEnd = best.normalizedImagePoint
+                        let vx = rawEnd.x - start.x
+                        let vy = rawEnd.y - start.y
+                        let extensionFactor: CGFloat = 1.75
+                        let end = CGPoint(
+                            x: min(max(start.x + vx * extensionFactor, 0), 1),
+                            y: min(max(start.y + vy * extensionFactor, 0), 1)
+                        )
+                        vectors.append(LiveFlowVector(start: start, end: end, intensity: intensity))
+                    }
+                }
+
+                if neighborYs.count >= 5 {
+                    let neighborMean = neighborYs.reduce(0, +) / Double(neighborYs.count)
+                    let depression = neighborMean - currentY
+                    if depression >= 0.006 {
+                        pools.append(
+                            LiveFlowPool(
+                                center: current.normalizedImagePoint,
+                                strength: min(max(depression / 0.025, 0.15), 1.0)
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        if vectors.count > 150 {
+            vectors = Array(vectors.prefix(150))
+        }
+        if pools.count > 24 {
+            pools = Array(pools.sorted { $0.strength > $1.strength }.prefix(24))
+        }
+        return (vectors, pools)
     }
 
     private struct LocalPoint {
@@ -318,18 +490,23 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         func y(u: Float, v: Float) -> Float { a * u + b * v + c }
     }
 
-    private func analyze(points allPoints: [SIMD3<Float>],
-                         averageDepth: Double,
-                         meshCount: Int,
-                         cameraTransform: simd_float4x4) -> ScanMetrics? {
+    private func analyze(
+        points allPoints: [SIMD3<Float>],
+        averageDepth: Double,
+        meshCount: Int,
+        cameraTransform: simd_float4x4,
+        pointLimit: Int
+    ) -> ScanMetrics? {
         guard allPoints.count >= 90 else { return nil }
 
         let analysisPoints: [SIMD3<Float>]
-        if allPoints.count > 10_000 {
-            let strideValue = max(1, allPoints.count / 10_000)
-            analysisPoints = Array(allPoints.enumerated().compactMap { index, point in
-                index % strideValue == 0 ? point : nil
-            }.prefix(10_000))
+        if allPoints.count > pointLimit {
+            let strideValue = max(1, allPoints.count / pointLimit)
+            analysisPoints = Array(
+                allPoints.enumerated().compactMap { index, point in
+                    index % strideValue == 0 ? point : nil
+                }.prefix(pointLimit)
+            )
         } else {
             analysisPoints = allPoints
         }
@@ -346,15 +523,18 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         let origin = surfaceBand.reduce(SIMD3<Float>(repeating: 0), +) / Float(surfaceBand.count)
         var local = surfaceBand.map { point -> LocalPoint in
             let horizontal = SIMD3<Float>(point.x - origin.x, 0, point.z - origin.z)
-            return LocalPoint(world: point, u: simd_dot(horizontal, right), v: simd_dot(horizontal, forward))
+            return LocalPoint(
+                world: point,
+                u: simd_dot(horizontal, right),
+                v: simd_dot(horizontal, forward)
+            )
         }
 
         guard let initialPlane = fitPlane(local), local.count >= 80 else { return nil }
         let residuals = local.map { Double($0.world.y - initialPlane.y(u: $0.u, v: $0.v)) }
         let medianResidual = median(residuals)
-        let deviations = residuals.map { abs($0 - medianResidual) }
-        let mad = median(deviations)
-        let residualLimit = Float(min(0.16, max(0.045, mad * 4.0 + 0.018)))
+        let mad = median(residuals.map { abs($0 - medianResidual) })
+        let residualLimit = Float(min(0.14, max(0.035, mad * 4.0 + 0.014)))
         local = local.filter { abs($0.world.y - initialPlane.y(u: $0.u, v: $0.v)) <= residualLimit }
 
         guard local.count >= 70, let plane = fitPlane(local) else { return nil }
@@ -367,14 +547,14 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         var vMax = Float(quantile(vValues, 0.98))
 
         if uMax - uMin < 0.35 {
-            let mid = (uMin + uMax) / 2
-            uMin = mid - 0.175
-            uMax = mid + 0.175
+            let middle = (uMin + uMax) / 2
+            uMin = middle - 0.175
+            uMax = middle + 0.175
         }
         if vMax - vMin < 0.35 {
-            let mid = (vMin + vMax) / 2
-            vMin = mid - 0.175
-            vMax = mid + 0.175
+            let middle = (vMin + vMax) / 2
+            vMin = middle - 0.175
+            vMax = middle + 0.175
         }
 
         let columns = requestedColumns
@@ -425,7 +605,13 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
 
         let du = Double(uMax - uMin) / Double(max(columns - 1, 1))
         let dv = Double(vMax - vMin) / Double(max(rows - 1, 1))
-        let localSlopeGrid = makeLocalSlopeGrid(heights: heights, columns: columns, rows: rows, du: du, dv: dv)
+        let localSlopeGrid = makeLocalSlopeGrid(
+            heights: heights,
+            columns: columns,
+            rows: rows,
+            du: du,
+            dv: dv
+        )
 
         var depressionGrid = Array(repeating: -1.0, count: count)
         var maximumDepression = 0.0
@@ -453,8 +639,8 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         let downhillAngle = atan2(Double(-plane.a), Double(-plane.b))
 
         let coverage = Double(observedCount) / Double(count)
-        let sampleStrength = min(1, Double(local.count) / 5000.0)
-        let quality = min(1, coverage * 0.72 + sampleStrength * 0.28)
+        let pointStrength = min(1, Double(allPoints.count) / Double(minimumRequiredPoints))
+        let quality = min(1, coverage * 0.65 + pointStrength * 0.35)
 
         var result = ScanMetrics()
         result.slopePercent = slopePercent
@@ -462,7 +648,7 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         result.distanceMeters = averageDepth
         result.quality = quality
         result.downhillAngleRadians = downhillAngle
-        result.sampleCount = local.count
+        result.sampleCount = allPoints.count
         result.hasMeasurement = true
         result.surfaceGrid = surfaceGrid
         result.gridColumns = columns
@@ -492,165 +678,215 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
         guard let modeBin = histogram.max(by: { $0.value < $1.value })?.key else { return nil }
         let center = (Float(modeBin) + 0.5) * binSize
 
-        var selected = points.filter { abs($0.y - center) <= 0.22 }
+        var selected = points.filter { abs($0.y - center) <= 0.20 }
         if selected.count < 80 {
             let medianY = Float(median(points.map { Double($0.y) }))
-            selected = points.filter { abs($0.y - medianY) <= 0.32 }
+            selected = points.filter { abs($0.y - medianY) <= 0.30 }
         }
         return selected
     }
 
     private func fitPlane(_ points: [LocalPoint]) -> Plane? {
         guard points.count >= 3 else { return nil }
-        var suu: Float = 0
-        var suv: Float = 0
-        var su1: Float = 0
-        var svv: Float = 0
-        var sv1: Float = 0
-        var suy: Float = 0
-        var svy: Float = 0
-        var sy1: Float = 0
+
+        var suu = 0.0
+        var suv = 0.0
+        var su = 0.0
+        var svv = 0.0
+        var sv = 0.0
+        var suy = 0.0
+        var svy = 0.0
+        var sy = 0.0
 
         for point in points {
-            let u = point.u
-            let v = point.v
-            let y = point.world.y
+            let u = Double(point.u)
+            let v = Double(point.v)
+            let y = Double(point.world.y)
             suu += u * u
             suv += u * v
-            su1 += u
+            su += u
             svv += v * v
-            sv1 += v
+            sv += v
             suy += u * y
             svy += v * y
-            sy1 += y
+            sy += y
         }
 
-        let n = Float(points.count)
-        let matrix = simd_float3x3(
-            SIMD3<Float>(suu, suv, su1),
-            SIMD3<Float>(suv, svv, sv1),
-            SIMD3<Float>(su1, sv1, n)
+        let n = Double(points.count)
+        let determinant = det3(
+            suu, suv, su,
+            suv, svv, sv,
+            su, sv, n
         )
-        guard abs(simd_determinant(matrix)) > 0.000001 else { return nil }
-        let coefficients = simd_inverse(matrix) * SIMD3<Float>(suy, svy, sy1)
-        return Plane(a: coefficients.x, b: coefficients.y, c: coefficients.z)
+        guard abs(determinant) > 1e-10 else { return nil }
+
+        let detA = det3(
+            suy, suv, su,
+            svy, svv, sv,
+            sy, sv, n
+        )
+        let detB = det3(
+            suu, suy, su,
+            suv, svy, sv,
+            su, sy, n
+        )
+        let detC = det3(
+            suu, suv, suy,
+            suv, svv, svy,
+            su, sv, sy
+        )
+
+        return Plane(
+            a: Float(detA / determinant),
+            b: Float(detB / determinant),
+            c: Float(detC / determinant)
+        )
+    }
+
+    private func det3(
+        _ a: Double, _ b: Double, _ c: Double,
+        _ d: Double, _ e: Double, _ f: Double,
+        _ g: Double, _ h: Double, _ i: Double
+    ) -> Double {
+        a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
     }
 
     private func largestConnectedComponent(cellCounts: [Int], columns: Int, rows: Int) -> Set<Int> {
-        let valid = Set(cellCounts.indices.filter { cellCounts[$0] > 0 })
-        var remaining = valid
-        var largest: Set<Int> = []
-        let neighbors = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)]
+        var visited = Set<Int>()
+        var best = Set<Int>()
 
-        while let start = remaining.first {
+        for start in cellCounts.indices where cellCounts[start] > 0 && !visited.contains(start) {
             var queue = [start]
-            var component: Set<Int> = []
-            remaining.remove(start)
+            var head = 0
+            var component = Set<Int>()
+            visited.insert(start)
 
-            while !queue.isEmpty {
-                let current = queue.removeLast()
+            while head < queue.count {
+                let current = queue[head]
+                head += 1
                 component.insert(current)
-                let column = current % columns
                 let row = current / columns
+                let column = current % columns
+                let neighbors = [(column - 1, row), (column + 1, row), (column, row - 1), (column, row + 1)]
 
-                for (dc, dr) in neighbors {
-                    let nc = column + dc
-                    let nr = row + dr
+                for (nc, nr) in neighbors {
                     guard nc >= 0, nc < columns, nr >= 0, nr < rows else { continue }
                     let next = nr * columns + nc
-                    if remaining.remove(next) != nil {
-                        queue.append(next)
-                    }
+                    guard cellCounts[next] > 0, !visited.contains(next) else { continue }
+                    visited.insert(next)
+                    queue.append(next)
                 }
             }
 
-            if component.count > largest.count { largest = component }
+            if component.count > best.count { best = component }
         }
-        return largest
+        return best
     }
 
-    private func fillRowAndColumnGaps(_ grid: inout [Double?], columns: Int, rows: Int) {
+    private func fillRowAndColumnGaps(_ heights: inout [Double?], columns: Int, rows: Int) {
+        guard heights.count == columns * rows else { return }
+
         for row in 0..<rows {
-            let validColumns = (0..<columns).filter { grid[row * columns + $0] != nil }
-            guard let first = validColumns.first, let last = validColumns.last, last > first else { continue }
-            for column in (first + 1)..<last where grid[row * columns + column] == nil {
-                let left = stride(from: column - 1, through: first, by: -1).first { grid[row * columns + $0] != nil }
-                let right = ((column + 1)...last).first { grid[row * columns + $0] != nil }
-                if let left, let right,
-                   let lv = grid[row * columns + left], let rv = grid[row * columns + right] {
-                    let t = Double(column - left) / Double(right - left)
-                    grid[row * columns + column] = lv * (1 - t) + rv * t
+            for column in 1..<(columns - 1) {
+                let index = row * columns + column
+                guard heights[index] == nil else { continue }
+                for gap in 1...3 {
+                    let left = column - gap
+                    let right = column + gap
+                    guard left >= 0, right < columns else { continue }
+                    if let a = heights[row * columns + left], let b = heights[row * columns + right] {
+                        heights[index] = (a + b) / 2
+                        break
+                    }
                 }
             }
         }
 
         for column in 0..<columns {
-            let validRows = (0..<rows).filter { grid[$0 * columns + column] != nil }
-            guard let first = validRows.first, let last = validRows.last, last > first else { continue }
-            for row in (first + 1)..<last where grid[row * columns + column] == nil {
-                let top = stride(from: row - 1, through: first, by: -1).first { grid[$0 * columns + column] != nil }
-                let bottom = ((row + 1)...last).first { grid[$0 * columns + column] != nil }
-                if let top, let bottom,
-                   let tv = grid[top * columns + column], let bv = grid[bottom * columns + column] {
-                    let t = Double(row - top) / Double(bottom - top)
-                    grid[row * columns + column] = tv * (1 - t) + bv * t
+            for row in 1..<(rows - 1) {
+                let index = row * columns + column
+                guard heights[index] == nil else { continue }
+                for gap in 1...3 {
+                    let top = row - gap
+                    let bottom = row + gap
+                    guard top >= 0, bottom < rows else { continue }
+                    if let a = heights[top * columns + column], let b = heights[bottom * columns + column] {
+                        heights[index] = (a + b) / 2
+                        break
+                    }
                 }
             }
         }
     }
 
-    private func interpolateSmallHoles(_ grid: inout [Double?], columns: Int, rows: Int, passes: Int) {
-        guard passes > 0 else { return }
+    private func interpolateSmallHoles(_ heights: inout [Double?], columns: Int, rows: Int, passes: Int) {
+        guard heights.count == columns * rows else { return }
         for _ in 0..<passes {
-            var next = grid
+            let source = heights
+            var changed = false
+
             for row in 0..<rows {
                 for column in 0..<columns {
                     let index = row * columns + column
-                    guard grid[index] == nil else { continue }
-                    var values: [Double] = []
+                    guard source[index] == nil else { continue }
+                    var neighbors: [Double] = []
+
                     for dr in -1...1 {
                         for dc in -1...1 where !(dc == 0 && dr == 0) {
-                            let nc = column + dc
                             let nr = row + dr
-                            guard nc >= 0, nc < columns, nr >= 0, nr < rows else { continue }
-                            if let value = grid[nr * columns + nc] { values.append(value) }
+                            let nc = column + dc
+                            guard nr >= 0, nr < rows, nc >= 0, nc < columns else { continue }
+                            if let value = source[nr * columns + nc] { neighbors.append(value) }
                         }
                     }
-                    if values.count >= 4 {
-                        next[index] = values.reduce(0, +) / Double(values.count)
+
+                    if neighbors.count >= 4 {
+                        heights[index] = neighbors.reduce(0, +) / Double(neighbors.count)
+                        changed = true
                     }
                 }
             }
-            grid = next
+            if !changed { break }
         }
     }
 
-    private func smoothGrid(_ grid: inout [Double?], columns: Int, rows: Int, passes: Int) {
+    private func smoothGrid(_ heights: inout [Double?], columns: Int, rows: Int, passes: Int) {
+        guard heights.count == columns * rows else { return }
         for _ in 0..<passes {
-            var next = grid
+            let source = heights
             for row in 0..<rows {
                 for column in 0..<columns {
                     let index = row * columns + column
-                    guard let center = grid[index] else { continue }
-                    var sum = center * 2.0
+                    guard let center = source[index] else { continue }
+                    var sum = center * 2
                     var weight = 2.0
-                    for (dc, dr) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                        let nc = column + dc
-                        let nr = row + dr
-                        guard nc >= 0, nc < columns, nr >= 0, nr < rows,
-                              let value = grid[nr * columns + nc] else { continue }
-                        sum += value
-                        weight += 1
+
+                    for dr in -1...1 {
+                        for dc in -1...1 where !(dc == 0 && dr == 0) {
+                            let nr = row + dr
+                            let nc = column + dc
+                            guard nr >= 0, nr < rows, nc >= 0, nc < columns,
+                                  let value = source[nr * columns + nc] else { continue }
+                            sum += value
+                            weight += 1
+                        }
                     }
-                    next[index] = sum / weight
+                    heights[index] = sum / weight
                 }
             }
-            grid = next
         }
     }
 
-    private func makeLocalSlopeGrid(heights: [Double?], columns: Int, rows: Int, du: Double, dv: Double) -> [Double] {
+    private func makeLocalSlopeGrid(
+        heights: [Double?],
+        columns: Int,
+        rows: Int,
+        du: Double,
+        dv: Double
+    ) -> [Double] {
         var result = Array(repeating: -1.0, count: heights.count)
+        guard du > 0.0001, dv > 0.0001 else { return result }
+
         for row in 0..<rows {
             for column in 0..<columns {
                 let index = row * columns + column
@@ -661,67 +897,59 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
                 let top = row > 0 ? heights[(row - 1) * columns + column] : nil
                 let bottom = row + 1 < rows ? heights[(row + 1) * columns + column] : nil
 
-                let dx: Double
-                if let left, let right { dx = (right - left) / max(2 * du, 0.001) }
-                else if let center = heights[index], let right { dx = (right - center) / max(du, 0.001) }
-                else if let center = heights[index], let left { dx = (center - left) / max(du, 0.001) }
-                else { dx = 0 }
+                var dx = 0.0
+                var dy = 0.0
+                var hasX = false
+                var hasY = false
 
-                let dy: Double
-                if let top, let bottom { dy = (bottom - top) / max(2 * dv, 0.001) }
-                else if let center = heights[index], let bottom { dy = (bottom - center) / max(dv, 0.001) }
-                else if let center = heights[index], let top { dy = (center - top) / max(dv, 0.001) }
-                else { dy = 0 }
+                if let left, let right {
+                    dx = (right - left) / (2 * du)
+                    hasX = true
+                }
+                if let top, let bottom {
+                    dy = (bottom - top) / (2 * dv)
+                    hasY = true
+                }
 
-                result[index] = sqrt(dx * dx + dy * dy) * 100
+                if hasX || hasY {
+                    result[index] = sqrt(dx * dx + dy * dy) * 100
+                }
             }
         }
         return result
     }
 
     private func makeFlowPath(grid: [Double], columns: Int, rows: Int) -> [SurfacePoint] {
-        guard columns > 1, rows > 1, grid.count == columns * rows else { return [] }
-        let validIndices = grid.indices.filter { grid[$0] >= 0 }
-        guard !validIndices.isEmpty else { return [] }
-
-        let centerColumn = columns / 2
-        let centerRow = rows / 2
-        let start = validIndices.min { lhs, rhs in
-            let lc = lhs % columns
-            let lr = lhs / columns
-            let rc = rhs % columns
-            let rr = rhs / columns
-            let ld = (lc - centerColumn) * (lc - centerColumn) + (lr - centerRow) * (lr - centerRow)
-            let rd = (rc - centerColumn) * (rc - centerColumn) + (rr - centerRow) * (rr - centerRow)
-            return ld < rd
-        } ?? validIndices[0]
+        let valid = grid.indices.filter { grid[$0] >= 0 }
+        guard let start = valid.max(by: { grid[$0] < grid[$1] }) else { return [] }
 
         var current = start
-        var visited: Set<Int> = []
+        var visited = Set<Int>()
         var path: [SurfacePoint] = []
 
-        for _ in 0..<36 {
-            if visited.contains(current) { break }
+        for _ in 0..<max(columns, rows) * 2 {
+            guard !visited.contains(current) else { break }
             visited.insert(current)
             let column = current % columns
             let row = current / columns
-            path.append(SurfacePoint(
-                x: Double(column) / Double(columns - 1),
-                y: Double(row) / Double(rows - 1)
-            ))
+            path.append(
+                SurfacePoint(
+                    x: Double(column) / Double(max(columns - 1, 1)),
+                    y: Double(row) / Double(max(rows - 1, 1))
+                )
+            )
 
-            let currentHeight = grid[current]
             var next = current
-            var bestHeight = currentHeight
+            var bestHeight = grid[current]
             for dr in -1...1 {
                 for dc in -1...1 where !(dc == 0 && dr == 0) {
-                    let nc = column + dc
                     let nr = row + dr
+                    let nc = column + dc
                     guard nc >= 0, nc < columns, nr >= 0, nr < rows else { continue }
                     let candidate = nr * columns + nc
                     let value = grid[candidate]
                     guard value >= 0 else { continue }
-                    if value < bestHeight - 0.0025 {
+                    if value < bestHeight - 0.002 {
                         bestHeight = value
                         next = candidate
                     }
@@ -736,11 +964,11 @@ final class LiDARScanner: NSObject, ObservableObject, ARSessionDelegate {
     private func median(_ values: [Double]) -> Double {
         guard !values.isEmpty else { return 0 }
         let sorted = values.sorted()
-        let mid = sorted.count / 2
+        let middle = sorted.count / 2
         if sorted.count.isMultiple(of: 2) {
-            return (sorted[mid - 1] + sorted[mid]) / 2
+            return (sorted[middle - 1] + sorted[middle]) / 2
         }
-        return sorted[mid]
+        return sorted[middle]
     }
 
     private func quantile(_ values: [Double], _ q: Double) -> Double {
@@ -770,9 +998,12 @@ struct ScannerCameraView: UIViewRepresentable {
     func updateUIView(_ uiView: LiveScannerContainerView, context: Context) {
         uiView.sceneView.session = scanner.session
         uiView.sceneView.debugOptions = []
-        uiView.flowOverlay.update(metrics: scanner.metrics,
-                                  frame: scanner.session.currentFrame,
-                                  measuring: scanner.isMeasuring)
+        uiView.flowOverlay.update(
+            vectors: scanner.liveFlowVectors,
+            pools: scanner.liveFlowPools,
+            frame: scanner.session.currentFrame,
+            measuring: scanner.isMeasuring
+        )
     }
 }
 
@@ -787,6 +1018,7 @@ final class LiveScannerContainerView: UIView {
         flowOverlay.translatesAutoresizingMaskIntoConstraints = false
         addSubview(sceneView)
         addSubview(flowOverlay)
+
         NSLayoutConstraint.activate([
             sceneView.leadingAnchor.constraint(equalTo: leadingAnchor),
             sceneView.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -806,13 +1038,22 @@ final class LiveScannerContainerView: UIView {
 }
 
 final class LiveFlowOverlayView: UIView {
-    private let streamLayer = CAShapeLayer()
+    private let flowColors: [UIColor] = [
+        UIColor.systemBlue.withAlphaComponent(0.30),
+        UIColor.cyan.withAlphaComponent(0.31),
+        UIColor.systemGreen.withAlphaComponent(0.32),
+        UIColor.systemYellow.withAlphaComponent(0.34),
+        UIColor.systemOrange.withAlphaComponent(0.36)
+    ]
+
+    private var flowLayers: [CAShapeLayer] = []
+    private let particleLayer = CAShapeLayer()
     private let arrowLayer = CAShapeLayer()
-    private let primaryLayer = CAShapeLayer()
-    private let lowPointLayer = CAShapeLayer()
+    private let poolLayer = CAShapeLayer()
     private let badge = UILabel()
 
-    private var currentMetrics = ScanMetrics()
+    private var vectors: [LiveFlowVector] = []
+    private var pools: [LiveFlowPool] = []
     private weak var currentFrame: ARFrame?
     private var measuring = false
 
@@ -820,48 +1061,54 @@ final class LiveFlowOverlayView: UIView {
         super.init(frame: frame)
         backgroundColor = .clear
 
-        streamLayer.fillColor = UIColor.clear.cgColor
-        streamLayer.strokeColor = UIColor.cyan.withAlphaComponent(0.72).cgColor
-        streamLayer.lineWidth = 1.7
-        streamLayer.lineCap = .round
-        streamLayer.lineJoin = .round
-        streamLayer.lineDashPattern = [6, 7]
+        for color in flowColors {
+            let flow = CAShapeLayer()
+            flow.fillColor = UIColor.clear.cgColor
+            flow.strokeColor = color.cgColor
+            flow.lineWidth = 13
+            flow.lineCap = .round
+            flow.lineJoin = .round
+            flow.shadowColor = color.withAlphaComponent(0.75).cgColor
+            flow.shadowRadius = 5
+            flow.shadowOpacity = 0.55
+            flow.shadowOffset = .zero
+            layer.addSublayer(flow)
+            flowLayers.append(flow)
+        }
+
+        particleLayer.fillColor = UIColor.clear.cgColor
+        particleLayer.strokeColor = UIColor.white.withAlphaComponent(0.82).cgColor
+        particleLayer.lineWidth = 2.1
+        particleLayer.lineCap = .round
+        particleLayer.lineJoin = .round
+        particleLayer.lineDashPattern = [2, 10]
+        particleLayer.shadowColor = UIColor.cyan.cgColor
+        particleLayer.shadowRadius = 3
+        particleLayer.shadowOpacity = 0.75
+        particleLayer.shadowOffset = .zero
+        layer.addSublayer(particleLayer)
 
         arrowLayer.fillColor = UIColor.clear.cgColor
-        arrowLayer.strokeColor = UIColor.cyan.withAlphaComponent(0.88).cgColor
-        arrowLayer.lineWidth = 1.7
+        arrowLayer.strokeColor = UIColor.white.withAlphaComponent(0.76).cgColor
+        arrowLayer.lineWidth = 1.5
         arrowLayer.lineCap = .round
         arrowLayer.lineJoin = .round
-
-        primaryLayer.fillColor = UIColor.clear.cgColor
-        primaryLayer.strokeColor = UIColor.white.withAlphaComponent(0.95).cgColor
-        primaryLayer.lineWidth = 3.0
-        primaryLayer.lineCap = .round
-        primaryLayer.lineJoin = .round
-        primaryLayer.lineDashPattern = [9, 7]
-        primaryLayer.shadowColor = UIColor.cyan.cgColor
-        primaryLayer.shadowRadius = 5
-        primaryLayer.shadowOpacity = 0.8
-        primaryLayer.shadowOffset = .zero
-
-        lowPointLayer.fillColor = UIColor.systemBlue.withAlphaComponent(0.25).cgColor
-        lowPointLayer.strokeColor = UIColor.white.cgColor
-        lowPointLayer.lineWidth = 2
-        lowPointLayer.shadowColor = UIColor.cyan.cgColor
-        lowPointLayer.shadowRadius = 6
-        lowPointLayer.shadowOpacity = 0.8
-        lowPointLayer.shadowOffset = .zero
-
-        layer.addSublayer(streamLayer)
         layer.addSublayer(arrowLayer)
-        layer.addSublayer(primaryLayer)
-        layer.addSublayer(lowPointLayer)
 
-        badge.text = "  FLUSSO LIVE  "
+        poolLayer.fillColor = UIColor.systemRed.withAlphaComponent(0.18).cgColor
+        poolLayer.strokeColor = UIColor.systemRed.withAlphaComponent(0.72).cgColor
+        poolLayer.lineWidth = 1.6
+        poolLayer.shadowColor = UIColor.systemRed.cgColor
+        poolLayer.shadowRadius = 9
+        poolLayer.shadowOpacity = 0.52
+        poolLayer.shadowOffset = .zero
+        layer.addSublayer(poolLayer)
+
+        badge.text = "  DEFLUSSO LIVE  "
         badge.font = .systemFont(ofSize: 11, weight: .bold)
         badge.textColor = .white
         badge.backgroundColor = UIColor.black.withAlphaComponent(0.58)
-        badge.layer.cornerRadius = 11
+        badge.layer.cornerRadius = 12
         badge.layer.masksToBounds = true
         badge.textAlignment = .center
         badge.isHidden = true
@@ -869,17 +1116,10 @@ final class LiveFlowOverlayView: UIView {
 
         let dash = CABasicAnimation(keyPath: "lineDashPhase")
         dash.fromValue = 0
-        dash.toValue = -26
-        dash.duration = 0.9
+        dash.toValue = -36
+        dash.duration = 0.72
         dash.repeatCount = .infinity
-        streamLayer.add(dash, forKey: "flowDash")
-
-        let primaryDash = CABasicAnimation(keyPath: "lineDashPhase")
-        primaryDash.fromValue = 0
-        primaryDash.toValue = -32
-        primaryDash.duration = 0.75
-        primaryDash.repeatCount = .infinity
-        primaryLayer.add(primaryDash, forKey: "primaryFlowDash")
+        particleLayer.add(dash, forKey: "waterMotion")
     }
 
     required init?(coder: NSCoder) {
@@ -888,137 +1128,103 @@ final class LiveFlowOverlayView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        streamLayer.frame = bounds
+        for flow in flowLayers { flow.frame = bounds }
+        particleLayer.frame = bounds
         arrowLayer.frame = bounds
-        primaryLayer.frame = bounds
-        lowPointLayer.frame = bounds
-        badge.frame = CGRect(x: 18, y: max(safeAreaInsets.top + 58, 78), width: 92, height: 23)
+        poolLayer.frame = bounds
+        badge.frame = CGRect(x: 18, y: max(safeAreaInsets.top + 58, 78), width: 118, height: 25)
         redraw()
     }
 
-    func update(metrics: ScanMetrics, frame: ARFrame?, measuring: Bool) {
-        currentMetrics = metrics
+    func update(vectors: [LiveFlowVector], pools: [LiveFlowPool], frame: ARFrame?, measuring: Bool) {
+        self.vectors = vectors
+        self.pools = pools
         currentFrame = frame
         self.measuring = measuring
-        badge.isHidden = !(measuring && metrics.hasMeasurement)
         isHidden = !measuring
+        badge.isHidden = !(measuring && (!vectors.isEmpty || !pools.isEmpty))
         redraw()
     }
 
     private func redraw() {
-        guard measuring,
-              currentMetrics.hasMeasurement,
-              currentMetrics.gridColumns > 1,
-              currentMetrics.gridRows > 1,
-              currentMetrics.surfaceGrid.count == currentMetrics.gridColumns * currentMetrics.gridRows,
-              bounds.width > 1,
-              bounds.height > 1 else {
-            streamLayer.path = nil
-            arrowLayer.path = nil
-            primaryLayer.path = nil
-            lowPointLayer.path = nil
+        guard measuring, bounds.width > 1, bounds.height > 1 else {
+            clearPaths()
             return
         }
 
-        let metrics = currentMetrics
-        let columns = metrics.gridColumns
-        let rows = metrics.gridRows
-        let streamPath = UIBezierPath()
+        var paths = flowLayers.map { _ in UIBezierPath() }
+        let particles = UIBezierPath()
         let arrows = UIBezierPath()
 
-        let stepColumn = max(2, columns / 7)
-        let stepRow = max(2, rows / 5)
+        for (index, vector) in vectors.enumerated() {
+            let start = mapImagePoint(vector.start)
+            let end = mapImagePoint(vector.end)
+            guard start.x.isFinite, start.y.isFinite, end.x.isFinite, end.y.isFinite else { continue }
 
-        for row in stride(from: 1, to: rows - 1, by: stepRow) {
-            for column in stride(from: 1, to: columns - 1, by: stepColumn) {
-                let index = row * columns + column
-                let current = metrics.surfaceGrid[index]
-                guard current >= 0 else { continue }
+            let bucket = min(flowLayers.count - 1, max(0, Int(floor(vector.intensity * Double(flowLayers.count)))))
+            paths[bucket].move(to: start)
+            paths[bucket].addLine(to: end)
+            particles.move(to: start)
+            particles.addLine(to: end)
 
-                var bestColumn = column
-                var bestRow = row
-                var bestValue = current
-                for dr in -1...1 {
-                    for dc in -1...1 where !(dc == 0 && dr == 0) {
-                        let nc = column + dc
-                        let nr = row + dr
-                        let candidate = nr * columns + nc
-                        let value = metrics.surfaceGrid[candidate]
-                        guard value >= 0 else { continue }
-                        if value < bestValue - 0.006 {
-                            bestValue = value
-                            bestColumn = nc
-                            bestRow = nr
-                        }
-                    }
-                }
-
-                guard bestColumn != column || bestRow != row else { continue }
-                let start = mapGridPoint(column: column, row: row, columns: columns, rows: rows)
-                let neighbor = mapGridPoint(column: bestColumn, row: bestRow, columns: columns, rows: rows)
-                let dx = neighbor.x - start.x
-                let dy = neighbor.y - start.y
-                let length = max(hypot(dx, dy), 0.001)
-                let scale: CGFloat = 1.75
-                let end = CGPoint(x: start.x + dx / length * min(length * scale, 48),
-                                  y: start.y + dy / length * min(length * scale, 48))
-                streamPath.move(to: start)
-                streamPath.addLine(to: end)
-                addArrowHead(to: arrows, from: start, to: end, size: 6.5)
+            if index.isMultiple(of: 2) {
+                addArrowHead(to: arrows, from: start, to: end, size: 5.5)
             }
         }
 
-        streamLayer.path = streamPath.cgPath
+        for index in flowLayers.indices {
+            flowLayers[index].path = paths[index].cgPath
+        }
+        particleLayer.path = particles.cgPath
         arrowLayer.path = arrows.cgPath
 
-        let primary = UIBezierPath()
-        if metrics.flowPath.count > 1 {
-            for (offset, point) in metrics.flowPath.enumerated() {
-                let mapped = mapNormalizedGridPoint(point)
-                if offset == 0 { primary.move(to: mapped) }
-                else { primary.addLine(to: mapped) }
-            }
+        let poolPath = UIBezierPath()
+        for pool in pools {
+            let center = mapImagePoint(pool.center)
+            let radius = 10 + CGFloat(pool.strength) * 18
+            poolPath.append(
+                UIBezierPath(
+                    ovalIn: CGRect(
+                        x: center.x - radius,
+                        y: center.y - radius,
+                        width: radius * 2,
+                        height: radius * 2
+                    )
+                )
+            )
         }
-        primaryLayer.path = primary.cgPath
-
-        let low = mapNormalizedGridPoint(SurfacePoint(x: metrics.lowPointX, y: metrics.lowPointY))
-        lowPointLayer.path = UIBezierPath(ovalIn: CGRect(x: low.x - 9, y: low.y - 9, width: 18, height: 18)).cgPath
+        poolLayer.path = poolPath.cgPath
     }
 
-    private func addArrowHead(to path: UIBezierPath, from start: CGPoint, to end: CGPoint, size: CGFloat) {
-        let angle = atan2(end.y - start.y, end.x - start.x)
-        let left = CGPoint(x: end.x - size * cos(angle - .pi / 6),
-                           y: end.y - size * sin(angle - .pi / 6))
-        let right = CGPoint(x: end.x - size * cos(angle + .pi / 6),
-                            y: end.y - size * sin(angle + .pi / 6))
-        path.move(to: left)
-        path.addLine(to: end)
-        path.addLine(to: right)
+    private func clearPaths() {
+        for flow in flowLayers { flow.path = nil }
+        particleLayer.path = nil
+        arrowLayer.path = nil
+        poolLayer.path = nil
     }
 
-    private func mapNormalizedGridPoint(_ point: SurfacePoint) -> CGPoint {
-        let columns = max(currentMetrics.gridColumns, 2)
-        let rows = max(currentMetrics.gridRows, 2)
-        let column = Int(round(point.x * Double(columns - 1)))
-        let row = Int(round(point.y * Double(rows - 1)))
-        return mapGridPoint(column: column, row: row, columns: columns, rows: rows)
-    }
-
-    private func mapGridPoint(column: Int, row: Int, columns: Int, rows: Int) -> CGPoint {
-        let gx = CGFloat(column) / CGFloat(max(columns - 1, 1))
-        let gy = CGFloat(row) / CGFloat(max(rows - 1, 1))
-
-        var normalized = CGPoint(
-            x: 0.10 + gx * 0.80,
-            y: 0.16 + gy * 0.68
-        )
-
+    private func mapImagePoint(_ point: CGPoint) -> CGPoint {
+        var normalized = point
         if let frame = currentFrame {
             let orientation = window?.windowScene?.interfaceOrientation ?? .portrait
             let transform = frame.displayTransform(for: orientation, viewportSize: bounds.size)
             normalized = normalized.applying(transform)
         }
-
         return CGPoint(x: normalized.x * bounds.width, y: normalized.y * bounds.height)
+    }
+
+    private func addArrowHead(to path: UIBezierPath, from start: CGPoint, to end: CGPoint, size: CGFloat) {
+        let angle = atan2(end.y - start.y, end.x - start.x)
+        let left = CGPoint(
+            x: end.x - size * cos(angle - .pi / 6),
+            y: end.y - size * sin(angle - .pi / 6)
+        )
+        let right = CGPoint(
+            x: end.x - size * cos(angle + .pi / 6),
+            y: end.y - size * sin(angle + .pi / 6)
+        )
+        path.move(to: left)
+        path.addLine(to: end)
+        path.addLine(to: right)
     }
 }
